@@ -1,0 +1,57 @@
+[package]
+name = "betterssh"
+version = "0.1.0"
+edition = "2021"
+authors = ["BetterSSH Contributors"]
+description = "A modern SSH client built with Rust and egui"
+license = "MIT"
+
+[[bin]]
+name = "betterssh"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.29", features = ["default"] }
+egui = "0.29"
+egui_plot = "0.29"
+tokio = { version = "1", features = ["full"] }
+russh = "0.45"
+russh-sftp = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+age = { version = "0.10", features = ["async", "armor"] }
+shellexpand = "3"
+anyhow = "1"
+thiserror = "1"
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "5"
+rfd = "0.14"
+dark-light = "1"
+log = "0.4"
+env_logger = "0.11"
+base64 = "0.22"
+rand = "0.8"
+futures = "0.3"
+async-trait = "0.1"
+secrecy = { version = "0.8", features = ["serde"] }
+zeroize = "1"
+crossbeam-channel = "0.5"
+image = { version = "0.25", features = ["png"] }
+
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1"
+
+[package.metadata.bundle]
+name = "BetterSSH"
+identifier = "com.betterssh.app"
+icon = ["assets/icon.ico", "assets/icon.png"]
+version = "0.1.0"
+short_description = "Modern SSH Client"
+long_description = "A modern, secure SSH client built with Rust"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
