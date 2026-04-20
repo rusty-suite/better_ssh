@@ -216,17 +216,10 @@ enum DialogAction { Save, Connect, Cancel, None }
 /// Fenêtre modale de création ou d'édition d'un profil SSH.
 /// Travaille sur un clone pour éviter les double-borrows de `app.sidebar`.
 fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
-    // Si le vault vient d'être déverrouillé, hydrate hôte/username du profil en cours.
-    if let (Some(vault), Some(ep)) = (&app.vault, &mut app.sidebar.edit_profile) {
-        if ep.host.is_empty() {
-            ep.host = vault.get_host(&ep.id).ok().flatten().unwrap_or_default();
-        }
-        if ep.username.is_empty() {
-            ep.username = vault.get_username(&ep.id).ok().flatten().unwrap_or_default();
-        }
-    }
-
     // Clone temporaire : édité dans la fenêtre, réintégré seulement si Save/Connect.
+    // IMPORTANT : pas d'hydratation automatique ici — elle écraserait les saisies de
+    // l'utilisateur à chaque frame. L'hydratation a lieu une seule fois dans les
+    // handlers to_open/to_edit, ou via le bouton « Déverrouiller » ci-dessous.
     let mut profile = app
         .sidebar
         .edit_profile
@@ -347,11 +340,41 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                                 .small()
                                 .weak(),
                             );
-                            ui.add(
-                                egui::TextEdit::singleline(&mut vault_key_input)
-                                    .password(true)
-                                    .hint_text("Clé maître du vault"),
-                            );
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut vault_key_input)
+                                        .password(true)
+                                        .hint_text("Clé maître du vault")
+                                        .desired_width(160.0),
+                                );
+                                // Déverrouille le vault et charge immédiatement les valeurs
+                                // chiffrées dans les champs du formulaire.
+                                let can_unlock = !vault_key_input.is_empty();
+                                if ui.add_enabled(can_unlock, egui::Button::new("🔓 Déverrouiller")).clicked() {
+                                    app.vault = Some(Vault::new(vault_key_input.clone()));
+                                    app.hydrate_profiles_from_vault();
+                                    // Hydrate aussi le profil en cours d'édition.
+                                    if let (Some(vault), Some(ep)) =
+                                        (&app.vault, &mut app.sidebar.edit_profile)
+                                    {
+                                        if ep.host.is_empty() {
+                                            ep.host = vault.get_host(&ep.id)
+                                                .ok().flatten().unwrap_or_default();
+                                        }
+                                        if ep.username.is_empty() {
+                                            ep.username = vault.get_username(&ep.id)
+                                                .ok().flatten().unwrap_or_default();
+                                        }
+                                        if ep.auth_method == AuthMethod::Password {
+                                            if let Ok(Some(pw)) = vault.get_password(&ep.id) {
+                                                app.sidebar.pending_password = pw;
+                                                app.sidebar.vault_password_loaded = true;
+                                            }
+                                        }
+                                    }
+                                    vault_key_input.clear();
+                                }
+                            });
                         }
                     });
                     ui.end_row();
