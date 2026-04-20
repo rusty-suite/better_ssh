@@ -72,6 +72,8 @@ pub struct FileExplorerState {
     pub favorites: Vec<(String, String)>,
     // Cache des rects d'items pour le lasso (rempli chaque frame)
     item_rects: Vec<(String, Rect)>,
+    /// true dès qu'un premier listage SFTP a été reçu (évite la boucle de rechargement).
+    pub loaded: bool,
 }
 
 impl FileExplorerState {
@@ -108,6 +110,7 @@ impl FileExplorerState {
                 ("🌐 /var/www".into(),   "/var/www".into()),
             ],
             item_rects: Vec::new(),
+            loaded: false,
         }
     }
 
@@ -506,8 +509,9 @@ fn render_list(
     ui.separator();
 
     ScrollArea::vertical().id_salt("fe_list").show(ui, |ui| {
-        // Zone de fond pour lasso + menu ctx
-        let bg = ui.allocate_rect(ui.available_rect_before_wrap(), egui::Sense::click_and_drag());
+        // Interaction de fond (lasso + menu ctx) sans avancer le curseur de layout.
+        let bg_rect = ui.available_rect_before_wrap();
+        let bg = ui.interact(bg_rect, ui.id().with("list_bg"), egui::Sense::click_and_drag());
         handle_bg(state, &bg, visible, req);
 
         egui::Grid::new("fe_list_rows").num_columns(5).spacing([6.0, 2.0]).min_row_height(20.0)
@@ -572,7 +576,8 @@ fn render_grid(
     req: &mut Option<SftpRequest>,
 ) {
     ScrollArea::vertical().id_salt("fe_grid").show(ui, |ui| {
-        let bg = ui.allocate_rect(ui.available_rect_before_wrap(), egui::Sense::click_and_drag());
+        let bg_rect = ui.available_rect_before_wrap();
+        let bg = ui.interact(bg_rect, ui.id().with("grid_bg"), egui::Sense::click_and_drag());
         handle_bg(state, &bg, visible, req);
 
         ui.horizontal_wrapped(|ui| {
@@ -693,7 +698,10 @@ fn ctx_menu(
         }
         ui.separator();
         let n_sel = if state.selected.contains(p) { state.selected.len() } else { 1 };
-        if ui.button(format!("🗑 Supprimer ({n_sel})  [Suppr]")).clicked() {
+        if ui.add(egui::Button::new(
+            egui::RichText::new(format!("🗑 Supprimer ({n_sel})  [Suppr]"))
+                .color(egui::Color32::from_rgb(220, 70, 70))
+        )).clicked() {
             let paths = if state.selected.contains(p) {
                 state.selected.iter().cloned().collect()
             } else { vec![p.to_string()] };

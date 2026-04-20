@@ -150,6 +150,15 @@ impl BetterSshApp {
         self.next_tab_id += 1;
         let mut tab = Tab::new(id, profile.clone());
 
+        // Répertoire de départ de l'explorateur = home de l'utilisateur.
+        tab.file_explorer.current_path = if profile.username == "root" {
+            "/root".into()
+        } else if !profile.username.is_empty() {
+            format!("/home/{}", profile.username)
+        } else {
+            "/".into()
+        };
+
         // Lance la session SSH en arrière-plan immédiatement.
         tab.session = Some(SshSession::connect(profile, password));
 
@@ -246,8 +255,23 @@ fn handle_keyboard_shortcuts(app: &mut BetterSshApp, ctx: &Context) {
         }
         // F2 → toggle explorateur SFTP
         if i.consume_key(Modifiers::NONE, Key::F2) {
-            if let Some(tab) = app.tabs.get_mut(app.active_tab) {
-                tab.show_file_explorer = !tab.show_file_explorer;
+            let idx = app.active_tab;
+            if idx < app.tabs.len() {
+                let was_shown = app.tabs[idx].show_file_explorer;
+                app.tabs[idx].show_file_explorer = !was_shown;
+                // Déclenche le premier chargement si on ouvre l'explorateur
+                // sur une session déjà connectée sans listage précédent.
+                if app.tabs[idx].show_file_explorer
+                    && app.tabs[idx].connected
+                    && !app.tabs[idx].file_explorer.loaded
+                    && !app.tabs[idx].file_explorer.loading
+                {
+                    let path = app.tabs[idx].file_explorer.current_path.clone();
+                    app.tabs[idx].file_explorer.loading = true;
+                    if let Some(session) = &app.tabs[idx].session {
+                        session.send_sftp(SftpCommand::ListDir(path));
+                    }
+                }
             }
         }
         // F3 → toggle moniteur système
@@ -336,6 +360,7 @@ fn poll_session_events(app: &mut BetterSshApp) {
                     if tab.file_explorer.current_path == path {
                         tab.file_explorer.entries = entries;
                         tab.file_explorer.loading = false;
+                        tab.file_explorer.loaded  = true;
                     }
                 }
                 SessionEvent::SftpOpResult { op, ok, msg } => {
