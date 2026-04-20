@@ -74,6 +74,8 @@ pub struct FileExplorerState {
     item_rects: Vec<(String, Rect)>,
     /// true dès qu'un premier listage SFTP a été reçu (évite la boucle de rechargement).
     pub loaded: bool,
+    /// UID numérique de l'utilisateur connecté (reçu via SftpUid au démarrage SFTP).
+    pub current_uid: Option<u32>,
 }
 
 impl FileExplorerState {
@@ -111,6 +113,7 @@ impl FileExplorerState {
             ],
             item_rects: Vec::new(),
             loaded: false,
+            current_uid: None,
         }
     }
 

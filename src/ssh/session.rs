@@ -62,6 +62,8 @@ pub enum SessionEvent {
     SftpListing { path: String, entries: Vec<RemoteEntry> },
     /// Résultat d'une opération SFTP (rename, delete, mkdir, etc.).
     SftpOpResult { op: String, ok: bool, msg: String },
+    /// UID numérique de l'utilisateur connecté (déterminé au démarrage SFTP).
+    SftpUid(u32),
 }
 
 // ─── Handler russh ────────────────────────────────────────────────────────────
@@ -338,6 +340,11 @@ async fn run_sftp_handler(
     mut sftp_rx: mpsc::UnboundedReceiver<SftpCommand>,
     event_tx: Sender<SessionEvent>,
 ) {
+    // Détermine l'UID de l'utilisateur courant en statant "." (son répertoire home).
+    if let Some(uid) = client.get_current_uid().await {
+        let _ = event_tx.send(SessionEvent::SftpUid(uid));
+    }
+
     while let Some(cmd) = sftp_rx.recv().await {
         match cmd {
             SftpCommand::ListDir(path) => {

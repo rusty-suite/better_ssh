@@ -97,9 +97,7 @@ fn render_main_area(app: &mut BetterSshApp, ctx: &Context) {
         // L'explorateur SFTP s'affiche à droite en split-pane.
         if show_explorer {
             let username    = app.tabs[idx].profile.username.clone();
-            // L'UID numérique de l'utilisateur courant n'est pas encore disponible
-            // sans requête SSH supplémentaire (future évolution).
-            let current_uid: Option<u32> = None;
+            let current_uid = app.tabs[idx].file_explorer.current_uid;
             let mut sftp_req: Option<file_explorer::SftpRequest> = None;
             egui::SidePanel::right("file_explorer")
                 .default_width(360.0)
