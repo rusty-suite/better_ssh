@@ -345,50 +345,47 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui) -> Option<Vec<u8>> {
                         });
                     }
 
-                    // Affiche la ligne en cours (pas encore terminée par \n).
-                    if !state.current_line.is_empty() {
-                        ui.horizontal_wrapped(|ui| {
-                            for span in &state.current_line {
-                                ui.label(
-                                    egui::RichText::new(&span.text)
-                                        .font(font_id.clone())
-                                        .color(span.fg),
-                                );
-                            }
-                        });
-                    }
+                    // Affiche la ligne en cours (SSH) + local echo (saisie utilisateur).
+                    ui.horizontal_wrapped(|ui| {
+                        for span in &state.current_line {
+                            let mut rt = egui::RichText::new(&span.text)
+                                .font(font_id.clone())
+                                .color(span.fg);
+                            if span.bold { rt = rt.strong(); }
+                            ui.label(rt);
+                        }
+                        // Local echo : affiche ce que l'utilisateur tape (avant envoi) + curseur █.
+                        let echo = format!("{}█", state.input);
+                        ui.label(
+                            egui::RichText::new(echo)
+                                .font(font_id.clone())
+                                .color(Color32::WHITE),
+                        );
+                    });
                 });
 
-            // ── Ligne de saisie ───────────────────────────────────────────────
-            ui.separator();
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("❯ ")
-                        .color(Color32::from_rgb(100, 220, 100))
-                        .font(font_id.clone()),
-                );
-                let response = ui.add(
-                    egui::TextEdit::singleline(&mut state.input)
-                        .font(egui::TextStyle::Monospace)
-                        .desired_width(f32::INFINITY)
-                        .frame(false)
-                        .text_color(Color32::WHITE),
-                );
-                // Maintient le focus sur la saisie pour capturer les touches.
-                if !response.has_focus() {
-                    response.request_focus();
-                }
+            // ── Champ de saisie invisible (capture clavier uniquement) ────────
+            let response = ui.add_sized(
+                [0.0, 0.0],
+                egui::TextEdit::singleline(&mut state.input)
+                    .font(egui::TextStyle::Monospace)
+                    .frame(false)
+                    .text_color(Color32::TRANSPARENT),
+            );
+            // Maintient le focus sur la saisie pour capturer les touches.
+            if !response.has_focus() {
+                response.request_focus();
+            }
 
-                // Entrée validée → envoie la ligne au serveur (avec \n) et vide le champ.
-                if response.has_focus()
-                    && ui.input(|i| i.key_pressed(Key::Enter))
-                {
-                    let mut cmd = state.input.clone();
-                    cmd.push('\n');
-                    to_send = Some(cmd.into_bytes());
-                    state.input.clear();
-                }
-            });
+            // Entrée validée → envoie la ligne au serveur (avec \n) et vide le champ.
+            if response.has_focus()
+                && ui.input(|i| i.key_pressed(Key::Enter))
+            {
+                let mut cmd = state.input.clone();
+                cmd.push('\n');
+                to_send = Some(cmd.into_bytes());
+                state.input.clear();
+            }
         });
 
     to_send
