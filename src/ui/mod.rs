@@ -402,6 +402,57 @@ fn render_preferences(app: &mut BetterSshApp, ctx: &Context) {
                 if ui.button("💾 Sauvegarder les préférences").clicked() {
                     app.save_config();
                 }
+
+                ui.add_space(20.0);
+
+                // ── Section À propos ──────────────────────────────────────────
+                ui.heading("À propos");
+                ui.separator();
+
+                egui::Frame::none()
+                    .fill(ui.visuals().faint_bg_color)
+                    .inner_margin(egui::Margin::same(10.0))
+                    .show(ui, |ui| {
+                        egui::Grid::new("about_grid")
+                            .num_columns(2)
+                            .spacing([12.0, 6.0])
+                            .show(ui, |ui| {
+                                ui.label("Application :");
+                                ui.strong(crate::assets::APP_NAME);
+                                ui.end_row();
+
+                                ui.label("Version :");
+                                ui.label(
+                                    egui::RichText::new(
+                                        format!("v{}", crate::assets::APP_VERSION)
+                                    ).monospace(),
+                                );
+                                ui.end_row();
+
+                                ui.label("Auteur :");
+                                ui.label(crate::assets::APP_AUTHORS);
+                                ui.end_row();
+
+                                ui.label("Licence :");
+                                ui.label(crate::assets::APP_LICENSE);
+                                ui.end_row();
+
+                                ui.label("Description :");
+                                ui.label(
+                                    egui::RichText::new(crate::assets::APP_DESCRIPTION).weak(),
+                                );
+                                ui.end_row();
+
+                                ui.label("Dépôt :");
+                                ui.hyperlink(crate::assets::APP_REPOSITORY);
+                                ui.end_row();
+                            });
+                    });
+
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Construit avec Rust, egui, russh et age.").small().weak());
+                });
             });
         });
 
