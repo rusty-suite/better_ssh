@@ -120,6 +120,16 @@ impl Vault {
         self.save_data(&data)
     }
 
+    /// Retourne true si le profil a des entrées chiffrées dans vault.toml
+    /// (sans déchiffrer — utilisable même vault verrouillé).
+    pub fn profile_has_encrypted_data(profile_id: &str) -> bool {
+        let path = AppConfig::config_dir().join("vault.toml");
+        if !path.exists() { return false; }
+        let Ok(text) = std::fs::read_to_string(&path) else { return false; };
+        let data: VaultData = toml::from_str(&text).unwrap_or_default();
+        data.entries.contains_key(profile_id)
+    }
+
     /// Supprime tous les secrets d'un profil (appelé quand le profil est supprimé).
     pub fn remove_profile(&self, profile_id: &str) -> Result<()> {
         let mut data = self.load_data()?;

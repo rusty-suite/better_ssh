@@ -112,6 +112,19 @@ fn render_main_area(app: &mut BetterSshApp, ctx: &Context) {
             if let Some(req) = sftp_req {
                 handle_sftp_request(app, idx, req);
             }
+
+            // Fallback : premier chargement si l'explorateur est visible,
+            // la session connectée, mais aucun listage n'a encore eu lieu.
+            if app.tabs[idx].connected
+                && !app.tabs[idx].file_explorer.loaded
+                && !app.tabs[idx].file_explorer.loading
+            {
+                let path = app.tabs[idx].file_explorer.current_path.clone();
+                app.tabs[idx].file_explorer.loading = true;
+                if let Some(session) = &app.tabs[idx].session {
+                    session.send_sftp(SftpCommand::ListDir(path));
+                }
+            }
         }
 
         // Le terminal occupe le reste de la zone centrale.

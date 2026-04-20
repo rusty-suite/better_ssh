@@ -23,10 +23,17 @@ pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
                 if ui.selectable_label(selected, tab.profile.display_name()).clicked() {
                     app.active_tab = i;
                 }
-                // Bouton de fermeture discret.
-                if ui.small_button("✕")
-                    .on_hover_text("Fermer la session (Ctrl+W)")
-                    .clicked()
+                // Bouton de fermeture rouge.
+                if ui.add(
+                    egui::Button::new(
+                        egui::RichText::new("✕")
+                            .color(egui::Color32::from_rgb(220, 70, 70))
+                            .strong(),
+                    )
+                    .frame(false)
+                )
+                .on_hover_text("Fermer la session (Ctrl+W)")
+                .clicked()
                 {
                     to_close = Some(i);
                 }
