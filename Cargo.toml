@@ -2,9 +2,15 @@
 name = "betterssh"
 version = "0.1.0"
 edition = "2021"
-authors = ["BetterSSH Contributors"]
-description = "A modern SSH client built with Rust and egui"
-license = "MIT"
+authors = ["rusty-suite"]
+description = "A modern, secure SSH client with multi-tab sessions, network scanner, SFTP explorer and encrypted password vault"
+license = "PolyForm-Noncommercial"
+repository = "https://github.com/rusty-suite/better_ssh"
+homepage = "https://github.com/rusty-suite/better_ssh"
+documentation = "https://github.com/rusty-suite/better_ssh#readme"
+readme = "README.md"
+keywords = ["ssh", "terminal", "sftp", "network", "client"]
+categories = ["network-programming", "command-line-utilities"]
 
 [[bin]]
 name = "betterssh"
@@ -48,7 +54,8 @@ identifier = "com.betterssh.app"
 icon = ["assets/icon.ico", "assets/icon.png"]
 version = "0.1.0"
 short_description = "Modern SSH Client"
-long_description = "A modern, secure SSH client built with Rust"
+long_description = "A modern, secure SSH client built with Rust and egui — multi-tab sessions, network scanner, SFTP explorer and encrypted password vault"
+copyright = "© 2025 rusty-suite — MIT License"
 
 [profile.release]
 opt-level = 3
