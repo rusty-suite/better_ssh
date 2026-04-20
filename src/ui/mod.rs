@@ -103,7 +103,12 @@ fn render_main_area(app: &mut BetterSshApp, ctx: &Context) {
 
         // Le terminal occupe le reste de la zone centrale.
         // Si l'utilisateur a validé une saisie, on la transmet à la session SSH.
-        if let Some(bytes) = terminal::render(&mut app.tabs[idx].terminal, ui) {
+        let modal_open = app.sidebar.show_new_profile
+            || app.show_preferences
+            || app.show_snippets
+            || app.show_network_scan
+            || app.pending_scan_connect.is_some();
+        if let Some(bytes) = terminal::render(&mut app.tabs[idx].terminal, ui, modal_open) {
             if let Some(session) = &app.tabs[idx].session {
                 session.send_input(bytes);
             }
