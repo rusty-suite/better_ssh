@@ -3,7 +3,7 @@
 /// panneau de scan réseau, préférences, etc.
 use crate::config::{AppConfig, AuthMethod, ConnectionProfile, Vault};
 use crate::network::scanner::ScanResult;
-use crate::ssh::session::{SessionCommand, SessionEvent, SshSession};
+use crate::ssh::session::{SessionCommand, SessionEvent, SftpCommand, SshSession};
 use crate::ui::{
     file_explorer::FileExplorerState,
     network_scan::NetworkScanState,
@@ -301,6 +301,16 @@ fn poll_session_events(app: &mut BetterSshApp) {
                 SessionEvent::Connected => {
                     tab.connected = true;
                     tab.terminal.feed(b"\x1b[32mConnexion SSH etablie.\x1b[0m\r\n");
+                    // Déclenche le premier listage SFTP si l'explorateur est ouvert.
+                    // La commande est mise en attente dans le canal mpsc et traitée dès
+                    // que run_sftp_handler démarre (après l'init du sous-système SFTP).
+                    if tab.show_file_explorer {
+                        let path = tab.file_explorer.current_path.clone();
+                        tab.file_explorer.loading = true;
+                        if let Some(session) = &tab.session {
+                            session.send_sftp(SftpCommand::ListDir(path));
+                        }
+                    }
                 }
                 SessionEvent::Data(data) => {
                     tab.terminal.feed(&data);
@@ -319,6 +329,27 @@ fn poll_session_events(app: &mut BetterSshApp) {
                 }
                 SessionEvent::FingerprintAlert { host, fingerprint } => {
                     log::warn!("Alerte fingerprint MITM : {host} — {fingerprint}");
+                }
+                SessionEvent::SftpListing { path, entries } => {
+                    // N'applique le listage que s'il correspond au chemin courant
+                    // (évite d'écraser une navigation effectuée entre-temps).
+                    if tab.file_explorer.current_path == path {
+                        tab.file_explorer.entries = entries;
+                        tab.file_explorer.loading = false;
+                    }
+                }
+                SessionEvent::SftpOpResult { op, ok, msg } => {
+                    if ok {
+                        tab.file_explorer.add_toast(format!("✓ {op}"));
+                        // Rafraîchit le répertoire courant après toute opération réussie.
+                        let path = tab.file_explorer.current_path.clone();
+                        tab.file_explorer.loading = true;
+                        if let Some(session) = &tab.session {
+                            session.send_sftp(SftpCommand::ListDir(path));
+                        }
+                    } else {
+                        tab.file_explorer.add_toast(format!("✗ {op} : {msg}"));
+                    }
                 }
             }
         }

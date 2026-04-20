@@ -2,11 +2,15 @@
 /// Parse les séquences ANSI/VT100 et affiche le texte avec les couleurs correspondantes.
 /// La saisie est gérée par un champ de texte egui en bas du panneau.
 use egui::{Color32, FontId, Key, Modifiers, ScrollArea, Ui};
+use std::collections::VecDeque;
 
 // ─── Constantes ───────────────────────────────────────────────────────────────
 
 /// Nombre maximal de lignes conservées dans le scrollback.
 const MAX_LINES: usize = 10_000;
+
+/// Nombre maximal de commandes dans l'historique de session (par onglet).
+const MAX_SESSION_HISTORY: usize = 50;
 
 /// Préréglages de taille de police avec leur label et leur taille en points.
 pub const FONT_PRESETS: &[(&str, f32)] = &[
@@ -65,6 +69,16 @@ pub struct TerminalState {
     /// Requête de recherche tapée dans la popup.
     pub history_search_query: String,
 
+    /// Historique de session (max 50 commandes). Index 0 = la plus récente.
+    pub session_history: VecDeque<String>,
+    /// true = liste déroulante de l'historique visible.
+    pub show_history_dropdown: bool,
+    /// Index sélectionné dans la liste filtrée (0 = commande la plus récente).
+    pub history_dropdown_idx: Option<usize>,
+    /// true si le champ de saisie invisible avait le focus à la frame précédente.
+    /// Permet de ne consommer les touches que quand le terminal est actif.
+    pub input_focused: bool,
+
     // ── État interne du parseur ANSI ────────────────────────────────────────
     /// Octets reçus mais pas encore parsés (séquences incomplètes).
     ansi_buf: Vec<u8>,
@@ -87,6 +101,10 @@ impl TerminalState {
             scroll_to_bottom: true,
             show_history_search: false,
             history_search_query: String::new(),
+            session_history: VecDeque::new(),
+            show_history_dropdown: false,
+            history_dropdown_idx: None,
+            input_focused: false,
             ansi_buf: Vec::new(),
             current_fg: Color32::from_rgb(204, 204, 204),
             current_bg: None,
@@ -141,7 +159,22 @@ impl TerminalState {
         while i < self.ansi_buf.len() {
             let b = self.ansi_buf[i];
             match b {
-                b'\r' => { i += 1; } // retour chariot seul → ignoré
+                b'\r' => {
+                    // Lookahead : \r\n = fin de ligne normale (le \n gèrera le saut).
+                    //              \r seul = retour au début de ligne (écrasement en place).
+                    if i + 1 < self.ansi_buf.len() {
+                        if self.ansi_buf[i + 1] != b'\n' {
+                            // Retour chariot seul : on efface la ligne courante pour
+                            // que le prochain contenu la remplace (indicateurs de progression).
+                            self.current_line.clear();
+                        }
+                        i += 1;
+                    } else {
+                        // Dernier octet du buffer : on ne sait pas si un \n suit.
+                        // On attend le prochain chunk plutôt que de décider à l'aveugle.
+                        break;
+                    }
+                }
                 b'\n' => { self.newline(); i += 1; }
                 b'\x08' => {
                     // Backspace : supprime le dernier caractère du span courant.
@@ -150,6 +183,8 @@ impl TerminalState {
                     }
                     i += 1;
                 }
+                0x07 => { i += 1; } // BEL → ignoré silencieusement
+                0x0e | 0x0f => { i += 1; } // SO/SI (shift charset) → ignoré
                 0x1b => {
                     // Séquence d'échappement ESC — attend au moins un octet de plus.
                     if i + 1 >= self.ansi_buf.len() { break; }
@@ -158,7 +193,7 @@ impl TerminalState {
                             // CSI (Control Sequence Introducer) : ESC [ params cmd
                             let start = i + 2;
                             let mut end = start;
-                            // Les paramètres CSI sont des chiffres et des ';'.
+                            // Les paramètres CSI sont des chiffres, ';', '?' et ' '.
                             while end < self.ansi_buf.len()
                                 && !self.ansi_buf[end].is_ascii_alphabetic()
                             {
@@ -171,10 +206,56 @@ impl TerminalState {
                             let params_str = std::str::from_utf8(&self.ansi_buf[start..end])
                                 .unwrap_or("")
                                 .to_string();
-                            if cmd == 'm' {
-                                self.apply_sgr(&params_str);
+                            match cmd {
+                                'm' => self.apply_sgr(&params_str),
+                                // Erase in Line (K) : efface tout ou partie de la ligne courante.
+                                // Sans curseur précis on simplifie : clear de la ligne.
+                                'K' => { self.current_line.clear(); }
+                                // Erase Display (J) : \e[2J = clear screen complet.
+                                'J' => {
+                                    let n: u32 = params_str
+                                        .trim_start_matches('?')
+                                        .parse().unwrap_or(0);
+                                    if n >= 2 {
+                                        self.lines.clear();
+                                    }
+                                    self.current_line.clear();
+                                }
+                                _ => {} // autres séquences CSI ignorées silencieusement
                             }
                             i = end + 1;
+                        }
+                        b']' => {
+                            // OSC (Operating System Command) : ESC ] ... BEL | ESC-backslash
+                            // Utilisé par le shell pour mettre à jour le titre de la fenêtre.
+                            // On consomme tout jusqu'au terminateur sans rien afficher.
+                            let mut end = i + 2;
+                            let found = loop {
+                                if end >= self.ansi_buf.len() { break false; }
+                                if self.ansi_buf[end] == 0x07 {
+                                    // BEL termine l'OSC.
+                                    end += 1;
+                                    break true;
+                                }
+                                if self.ansi_buf[end] == 0x1b
+                                    && end + 1 < self.ansi_buf.len()
+                                    && self.ansi_buf[end + 1] == b'\\'
+                                {
+                                    // ST (ESC \) termine l'OSC.
+                                    end += 2;
+                                    break true;
+                                }
+                                end += 1;
+                            };
+                            if found {
+                                i = end;
+                            } else {
+                                break; // séquence incomplète → attend plus de données
+                            }
+                        }
+                        b'(' | b')' | b'*' | b'+' => {
+                            // Désignation de jeu de caractères : ESC ( G — 3 octets.
+                            if i + 2 < self.ansi_buf.len() { i += 3; } else { break; }
                         }
                         _ => { i += 2; } // ESC + octet inconnu → ignore les deux
                     }
@@ -280,6 +361,29 @@ impl TerminalState {
     }
 }
 
+// ─── Helpers historique ───────────────────────────────────────────────────────
+
+/// Retourne la liste filtrée (newest first, index 0) selon le filtre courant.
+/// Produit des String clonées pour éviter les problèmes de durée de vie.
+fn build_filtered_history(history: &VecDeque<String>, filter: &str) -> Vec<String> {
+    let f = filter.trim().to_lowercase();
+    history.iter()
+        .filter(|e| f.is_empty() || e.to_lowercase().contains(&f))
+        .cloned()
+        .collect()
+}
+
+/// Pousse une commande dans l'historique de session (déduplique les consécutifs).
+fn push_session_history(history: &mut VecDeque<String>, cmd: &str) {
+    let trimmed = cmd.trim();
+    if trimmed.is_empty() { return; }
+    if history.front().map(String::as_str) == Some(trimmed) { return; }
+    history.push_front(trimmed.to_string());
+    if history.len() > MAX_SESSION_HISTORY {
+        history.pop_back();
+    }
+}
+
 // ─── Rendu egui ──────────────────────────────────────────────────────────────
 
 /// Retourne les octets à envoyer au serveur SSH si l'utilisateur a validé une saisie,
@@ -289,7 +393,7 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
     // Couleur de fond du terminal (inspirée du thème Dracula).
     let bg = Color32::from_rgb(20, 20, 30);
 
-    // Octets à retourner à l'appelant pour envoi SSH (rempli si l'utilisateur valide une saisie).
+    // Octets à retourner à l'appelant pour envoi SSH.
     let mut to_send: Option<Vec<u8>> = None;
 
     // Ctrl+Scroll pour ajuster la taille de police à la volée.
@@ -301,6 +405,91 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
     // Ctrl+R → bascule la popup de recherche dans l'historique.
     if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::R)) {
         state.show_history_search = !state.show_history_search;
+    }
+
+    // ── Gestion des touches pour la liste déroulante (avant le TextEdit) ────
+    // On ne consomme les touches que si le terminal avait le focus la frame précédente,
+    // afin de ne pas voler les flèches/Tab aux autres widgets de l'interface.
+    let terminal_active = state.input_focused && !modal_open;
+
+    if terminal_active {
+        // Flèche Haut : ouvre ou remonte dans la liste déroulante.
+        if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowUp)) {
+            if !state.show_history_dropdown {
+                let hist = build_filtered_history(&state.session_history, &state.input);
+                if !hist.is_empty() {
+                    state.show_history_dropdown = true;
+                    state.history_dropdown_idx = Some(0);
+                }
+            } else {
+                let hist = build_filtered_history(&state.session_history, &state.input);
+                let max = hist.len();
+                if let Some(idx) = state.history_dropdown_idx {
+                    if idx + 1 < max {
+                        state.history_dropdown_idx = Some(idx + 1);
+                    }
+                }
+            }
+        }
+
+        // Flèche Bas : descend dans la liste ou ferme si déjà au plus récent.
+        if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowDown)) {
+            if state.show_history_dropdown {
+                match state.history_dropdown_idx {
+                    Some(0) | None => {
+                        state.show_history_dropdown = false;
+                        state.history_dropdown_idx = None;
+                    }
+                    Some(n) => {
+                        state.history_dropdown_idx = Some(n - 1);
+                    }
+                }
+            }
+        }
+
+        // Échap : ferme la liste sans sélectionner.
+        if state.show_history_dropdown
+            && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape))
+        {
+            state.show_history_dropdown = false;
+            state.history_dropdown_idx = None;
+        }
+
+        // Entrée : si liste ouverte → sélectionne et ferme (sans envoyer).
+        if state.show_history_dropdown
+            && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter))
+        {
+            let hist = build_filtered_history(&state.session_history, &state.input);
+            if let Some(idx) = state.history_dropdown_idx {
+                if let Some(cmd) = hist.get(idx) {
+                    state.input = cmd.clone();
+                }
+            }
+            state.show_history_dropdown = false;
+            state.history_dropdown_idx = None;
+        }
+
+        // Tab : sélectionne depuis la liste OU envoie la complétion au serveur SSH.
+        if terminal_active && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Tab)) {
+            if state.show_history_dropdown {
+                // Sélectionne l'entrée courante et ferme la liste.
+                let hist = build_filtered_history(&state.session_history, &state.input);
+                if let Some(idx) = state.history_dropdown_idx {
+                    if let Some(cmd) = hist.get(idx) {
+                        state.input = cmd.clone();
+                    }
+                }
+                state.show_history_dropdown = false;
+                state.history_dropdown_idx = None;
+            } else if !state.input.is_empty() {
+                // Complétion de chemin côté serveur :
+                // envoie ce qui a été tapé + \t pour que le shell distant complète.
+                let mut bytes = state.input.as_bytes().to_vec();
+                bytes.push(b'\t');
+                to_send = Some(bytes);
+                state.input.clear();
+            }
+        }
     }
 
     egui::Frame::none()
@@ -365,6 +554,111 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
                     });
                 });
 
+            // ── Liste déroulante de l'historique ─────────────────────────────
+            if state.show_history_dropdown {
+                let hist = build_filtered_history(&state.session_history, &state.input);
+
+                // Referme si le filtre n'a plus de résultats.
+                if hist.is_empty() {
+                    state.show_history_dropdown = false;
+                    state.history_dropdown_idx = None;
+                } else {
+                    // Corrige l'index si le filtre a réduit la liste.
+                    if let Some(idx) = state.history_dropdown_idx {
+                        if idx >= hist.len() {
+                            state.history_dropdown_idx = Some(0);
+                        }
+                    }
+
+                    let clip = ui.clip_rect();
+                    let item_h = state.font_size + 10.0;
+                    let visible_count = hist.len().min(8) as f32;
+                    let dropdown_h = visible_count * item_h + 10.0;
+                    let dropdown_w = (clip.width() - 24.0).clamp(200.0, 640.0);
+
+                    // Positionne la liste juste au-dessus de la ligne d'écho.
+                    let pos = egui::pos2(
+                        clip.left() + 12.0,
+                        clip.bottom() - dropdown_h - item_h * 1.8,
+                    );
+
+                    let selected_idx = state.history_dropdown_idx;
+                    let mut new_input: Option<String> = None;
+                    let mut close_dropdown = false;
+
+                    egui::Area::new(egui::Id::new("hist_dropdown"))
+                        .order(egui::Order::Foreground)
+                        .fixed_pos(pos)
+                        .show(ui.ctx(), |ui| {
+                            ui.set_max_width(dropdown_w);
+                            egui::Frame::none()
+                                .fill(Color32::from_rgb(28, 28, 45))
+                                .stroke(egui::Stroke::new(
+                                    1.0,
+                                    Color32::from_rgb(90, 90, 170),
+                                ))
+                                .inner_margin(egui::Margin::same(4.0))
+                                .show(ui, |ui| {
+                                    // En-tête discret.
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            " Historique ({}/{})",
+                                            selected_idx.map(|i| i + 1).unwrap_or(0),
+                                            hist.len()
+                                        ))
+                                        .small()
+                                        .color(Color32::from_rgb(120, 120, 180)),
+                                    );
+                                    ui.separator();
+
+                                    egui::ScrollArea::vertical()
+                                        .max_height(dropdown_h - 32.0)
+                                        .show(ui, |ui| {
+                                            // Affiche du plus ancien (haut) au plus récent (bas).
+                                            let len = hist.len();
+                                            for rev_i in 0..len {
+                                                let i = len - 1 - rev_i;
+                                                let entry = &hist[i];
+                                                let selected = selected_idx == Some(i);
+
+                                                let resp = ui.selectable_label(
+                                                    selected,
+                                                    egui::RichText::new(entry.as_str())
+                                                        .font(FontId::monospace(
+                                                            state.font_size - 1.0,
+                                                        ))
+                                                        .color(if selected {
+                                                            Color32::WHITE
+                                                        } else {
+                                                            Color32::from_rgb(200, 200, 220)
+                                                        }),
+                                                );
+
+                                                // Fait défiler pour garder la sélection visible.
+                                                if selected {
+                                                    resp.scroll_to_me(Some(egui::Align::Center));
+                                                }
+
+                                                // Clic souris → sélectionne.
+                                                if resp.clicked() {
+                                                    new_input = Some(entry.clone());
+                                                    close_dropdown = true;
+                                                }
+                                            }
+                                        });
+                                });
+                        });
+
+                    if let Some(cmd) = new_input {
+                        state.input = cmd;
+                    }
+                    if close_dropdown {
+                        state.show_history_dropdown = false;
+                        state.history_dropdown_idx = None;
+                    }
+                }
+            }
+
             // ── Champ de saisie invisible (capture clavier uniquement) ────────
             let response = ui.add_sized(
                 [0.0, 0.0],
@@ -378,14 +672,20 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
             if !modal_open && !response.has_focus() {
                 response.request_focus();
             }
+            // Mémorise l'état de focus pour la frame suivante (utilisé par les handlers de touches).
+            state.input_focused = response.has_focus();
 
             // Entrée validée → envoie la ligne au serveur (avec \n) et vide le champ.
+            // (Cas dropdown déjà traité avant le Frame par consume_key.)
             if response.has_focus()
                 && ui.input(|i| i.key_pressed(Key::Enter))
+                && !state.show_history_dropdown
             {
-                let mut cmd = state.input.clone();
-                cmd.push('\n');
-                to_send = Some(cmd.into_bytes());
+                let cmd = state.input.clone();
+                push_session_history(&mut state.session_history, &cmd);
+                let mut send_cmd = cmd;
+                send_cmd.push('\n');
+                to_send = Some(send_cmd.into_bytes());
                 state.input.clear();
             }
         });
