@@ -83,15 +83,26 @@ pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
 
         for i in matching {
             let profile = &app.sidebar.profiles[i];
-            // Indicateur visuel si une session est déjà ouverte pour ce profil.
             let is_active = app.tabs.iter().any(|t| t.profile.id == profile.id);
             let indicator = if is_active { "●" } else { "○" };
-            // Quand le vault est verrouillé, hôte et utilisateur sont vides.
             let vault_locked = profile.host.is_empty() || profile.username.is_empty();
-            let label = if vault_locked {
-                format!("{indicator} {} [🔒]", profile.display_name())
+            // Nom de session (toujours visible).
+            let session_name = if profile.name.is_empty() {
+                if vault_locked { "Sans nom 🔒".to_string() }
+                else { profile.host.clone() }
             } else {
-                format!("{indicator} {}@{}", profile.username, profile.display_name())
+                profile.name.clone()
+            };
+            // Détails de connexion sur la deuxième ligne.
+            let conn_detail = if vault_locked {
+                "🔒 Données chiffrées".to_string()
+            } else {
+                format!("{}@{}:{}", profile.username, profile.host, profile.port)
+            };
+            let hover = if vault_locked {
+                format!("🔒 Vault verrouillé — déverrouillez pour voir l'hôte\nDouble-clic pour connecter")
+            } else {
+                format!("{}@{}:{}\nDouble-clic pour connecter", profile.username, profile.host, profile.port)
             };
             let tags = profile.tags.clone();
 
@@ -99,15 +110,23 @@ pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
                 .inner_margin(egui::Margin::symmetric(4.0, 2.0))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        let resp = ui.selectable_label(is_active, &label);
-                        // Double-clic → ouvrir la session
-                        if resp.double_clicked() { to_open = Some(i); }
-                        let hover = if vault_locked {
-                            format!("Port : {}\n🔒 Vault verrouillé — déverrouillez pour voir l'hôte\nDouble-clic pour connecter", profile.port)
-                        } else {
-                            format!("{}:{}\nDouble-clic pour connecter", profile.host, profile.port)
-                        };
-                        resp.on_hover_text(hover);
+                        ui.vertical(|ui| {
+                            let resp = ui.selectable_label(
+                                is_active,
+                                format!("{indicator} {session_name}"),
+                            );
+                            if resp.double_clicked() { to_open = Some(i); }
+                            resp.on_hover_text(&hover);
+                            // Détails user@host:port ou indication vault verrouillé.
+                            let detail_color = if vault_locked {
+                                egui::Color32::from_rgb(180, 140, 60)
+                            } else {
+                                ui.visuals().weak_text_color()
+                            };
+                            ui.label(
+                                egui::RichText::new(&conn_detail).small().color(detail_color)
+                            );
+                        });
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.add(egui::Button::new(
@@ -120,7 +139,6 @@ pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
                             }
                         });
                     });
-                    // Affiche les étiquettes sous le nom du profil.
                     if !tags.is_empty() {
                         ui.horizontal(|ui| {
                             for tag in &tags {
@@ -247,242 +265,258 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
         .default_size([440.0, 520.0])
         .collapsible(false)
         .show(ctx, |ui| {
-            egui::Grid::new("profile_grid")
-                .num_columns(2)
-                .spacing([8.0, 8.0])
-                .show(ui, |ui| {
-                    // ── Champs de base ─────────────────────────────────────────
-                    ui.label("Nom :");
-                    ui.text_edit_singleline(&mut profile.name)
-                        .on_hover_text("Nom affiché dans la barre latérale");
-                    ui.end_row();
-
-                    ui.label("Hôte :");
-                    let host_hint = if profile.host.is_empty() && app.vault.is_none() {
-                        "🔒 Chiffré — déverrouillez le vault ci-dessous"
-                    } else {
-                        "Adresse IP ou nom DNS"
-                    };
-                    ui.add(
-                        egui::TextEdit::singleline(&mut profile.host)
-                            .hint_text(host_hint),
-                    ).on_hover_text("Adresse IP ou nom DNS");
-                    ui.end_row();
-
-                    ui.label("Port :");
-                    let mut port_str = profile.port.to_string();
-                    if ui.add(
-                        egui::TextEdit::singleline(&mut port_str).desired_width(60.0)
-                    ).changed() {
-                        profile.port = port_str.parse().unwrap_or(22);
-                    }
-                    ui.end_row();
-
-                    ui.label("Utilisateur :");
-                    let user_hint = if profile.username.is_empty() && app.vault.is_none() {
-                        "🔒 Chiffré — déverrouillez le vault ci-dessous"
-                    } else {
-                        "Nom d'utilisateur SSH"
-                    };
-                    ui.add(
-                        egui::TextEdit::singleline(&mut profile.username)
-                            .hint_text(user_hint),
+            if needs_vault_unlock {
+                // ── Vue réduite : vault verrouillé ─────────────────────────────
+                ui.add_space(8.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(egui::RichText::new("🔒").size(32.0));
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new("Ce profil contient des données chiffrées.")
+                            .strong(),
                     );
-                    ui.end_row();
-
-                    // ── Méthode d'authentification ─────────────────────────────
-                    ui.label("Authentification :");
-                    egui::ComboBox::new("auth_method_combo", "")
-                        .selected_text(profile.auth_method.to_string())
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut profile.auth_method, AuthMethod::Password, "Mot de passe"
-                            );
-                            ui.selectable_value(
-                                &mut profile.auth_method, AuthMethod::Agent, "Agent SSH"
-                            );
-                            if ui.selectable_label(
-                                matches!(profile.auth_method, AuthMethod::PublicKey { .. }),
-                                "Clé privée",
-                            ).clicked() {
-                                profile.auth_method = AuthMethod::PublicKey {
-                                    identity_file: format!(
-                                        "{}/.ssh/id_ed25519",
-                                        dirs::home_dir().unwrap_or_default().display()
-                                    ),
-                                };
+                    ui.label(
+                        egui::RichText::new(
+                            "Entrez la clé vault pour déverrouiller et accéder à la configuration."
+                        )
+                        .small()
+                        .weak(),
+                    );
+                });
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label("Clé vault :");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut vault_key_input)
+                            .password(true)
+                            .hint_text("Clé maître du vault")
+                            .desired_width(200.0),
+                    );
+                    let can_unlock = !vault_key_input.is_empty();
+                    if ui.add_enabled(can_unlock, egui::Button::new("🔓 Déverrouiller")).clicked() {
+                        let vault = Vault::new(vault_key_input.clone());
+                        if profile.host.is_empty() {
+                            profile.host = vault.get_host(&profile.id)
+                                .ok().flatten().unwrap_or_default();
+                        }
+                        if profile.username.is_empty() {
+                            profile.username = vault.get_username(&profile.id)
+                                .ok().flatten().unwrap_or_default();
+                        }
+                        if profile.auth_method == AuthMethod::Password {
+                            if let Ok(Some(pw)) = vault.get_password(&profile.id) {
+                                pending_password = pw;
+                                app.sidebar.vault_password_loaded = true;
                             }
-                        });
-                    ui.end_row();
+                        }
+                        app.vault = Some(vault);
+                        app.hydrate_profiles_from_vault();
+                        vault_key_input.clear();
+                    }
+                });
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.button("✕ Annuler").clicked() { action = DialogAction::Cancel; }
+                });
+            } else {
+                // ── Vue complète : vault déverrouillé ou nouveau profil ────────
+                egui::Grid::new("profile_grid")
+                    .num_columns(2)
+                    .spacing([8.0, 8.0])
+                    .show(ui, |ui| {
+                        ui.label("Nom :");
+                        ui.text_edit_singleline(&mut profile.name)
+                            .on_hover_text("Nom affiché dans la barre latérale");
+                        ui.end_row();
 
-                    // Champ mot de passe (masqué) si auth par password.
-                    if profile.auth_method == AuthMethod::Password {
-                        ui.label("Mot de passe :");
+                        ui.label("Hôte :");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut profile.host)
+                                .hint_text("Adresse IP ou nom DNS"),
+                        ).on_hover_text("Adresse IP ou nom DNS");
+                        ui.end_row();
+
+                        ui.label("Port :");
+                        let mut port_str = profile.port.to_string();
+                        if ui.add(
+                            egui::TextEdit::singleline(&mut port_str).desired_width(60.0)
+                        ).changed() {
+                            profile.port = port_str.parse().unwrap_or(22);
+                        }
+                        ui.end_row();
+
+                        ui.label("Utilisateur :");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut profile.username)
+                                .hint_text("Nom d'utilisateur SSH"),
+                        );
+                        ui.end_row();
+
+                        ui.label("Authentification :");
+                        egui::ComboBox::new("auth_method_combo", "")
+                            .selected_text(profile.auth_method.to_string())
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut profile.auth_method, AuthMethod::Password, "Mot de passe"
+                                );
+                                ui.selectable_value(
+                                    &mut profile.auth_method, AuthMethod::Agent, "Agent SSH"
+                                );
+                                if ui.selectable_label(
+                                    matches!(profile.auth_method, AuthMethod::PublicKey { .. }),
+                                    "Clé privée",
+                                ).clicked() {
+                                    profile.auth_method = AuthMethod::PublicKey {
+                                        identity_file: format!(
+                                            "{}/.ssh/id_ed25519",
+                                            dirs::home_dir().unwrap_or_default().display()
+                                        ),
+                                    };
+                                }
+                            });
+                        ui.end_row();
+
+                        if profile.auth_method == AuthMethod::Password {
+                            ui.label("Mot de passe :");
+                            ui.vertical(|ui| {
+                                if app.sidebar.vault_password_loaded {
+                                    ui.label(
+                                        egui::RichText::new("✓ Chargé depuis le vault")
+                                            .small()
+                                            .color(egui::Color32::from_rgb(80, 200, 80)),
+                                    );
+                                }
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut pending_password)
+                                        .password(true)
+                                        .hint_text(if app.sidebar.vault_password_loaded {
+                                            "Laisser vide pour réutiliser le vault"
+                                        } else {
+                                            "Mot de passe SSH"
+                                        }),
+                                );
+                            });
+                            ui.end_row();
+                        }
+
+                        // ── Section vault ──────────────────────────────────────
+                        ui.label("Vault :");
                         ui.vertical(|ui| {
-                            if app.sidebar.vault_password_loaded {
+                            if app.vault.is_some() {
                                 ui.label(
-                                    egui::RichText::new("✓ Chargé depuis le vault")
+                                    egui::RichText::new("🔓 Vault déverrouillé")
                                         .small()
                                         .color(egui::Color32::from_rgb(80, 200, 80)),
                                 );
-                            }
-                            ui.add(
-                                egui::TextEdit::singleline(&mut pending_password)
-                                    .password(true)
-                                    .hint_text(if app.sidebar.vault_password_loaded {
-                                        "Laisser vide pour réutiliser le vault"
-                                    } else {
-                                        "Mot de passe SSH"
-                                    }),
-                            );
-                        });
-                        ui.end_row();
-                    }
-
-                    // ── Section vault ──────────────────────────────────────────
-                    ui.label("Vault :");
-                    ui.vertical(|ui| {
-                        if app.vault.is_some() {
-                            ui.label(
-                                egui::RichText::new("🔓 Vault déverrouillé")
-                                    .small()
-                                    .color(egui::Color32::from_rgb(80, 200, 80)),
-                            );
-                            ui.label(
-                                egui::RichText::new(
-                                    "Hôte, utilisateur et mot de passe seront chiffrés."
-                                )
-                                .small()
-                                .weak(),
-                            );
-                        } else {
-                            if needs_vault_unlock {
                                 ui.label(
                                     egui::RichText::new(
-                                        "🔒 Ce profil contient des données chiffrées.\nEntrez la clé vault pour les déchiffrer."
-                                    )
-                                    .color(egui::Color32::from_rgb(220, 160, 60)),
-                                );
-                            } else {
-                                ui.label(
-                                    egui::RichText::new("🔒 Vault verrouillé").small().weak(),
-                                );
-                                ui.label(
-                                    egui::RichText::new(
-                                        "Requis pour chiffrer hôte et utilisateur."
+                                        "Hôte, utilisateur et mot de passe seront chiffrés."
                                     )
                                     .small()
                                     .weak(),
                                 );
-                            }
-                            ui.horizontal(|ui| {
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut vault_key_input)
-                                        .password(true)
-                                        .hint_text("Clé maître du vault")
-                                        .desired_width(160.0),
+                            } else {
+                                ui.label(egui::RichText::new("🔒 Vault verrouillé").small().weak());
+                                ui.label(
+                                    egui::RichText::new("Requis pour chiffrer hôte et utilisateur.")
+                                        .small()
+                                        .weak(),
                                 );
-                                let can_unlock = !vault_key_input.is_empty();
-                                if ui.add_enabled(can_unlock, egui::Button::new("🔓 Déverrouiller")).clicked() {
-                                    let vault = Vault::new(vault_key_input.clone());
-                                    // Met à jour le profil local directement (évite l'écrasement
-                                    // par le write-back en fin de frame).
-                                    if profile.host.is_empty() {
-                                        profile.host = vault.get_host(&profile.id)
-                                            .ok().flatten().unwrap_or_default();
-                                    }
-                                    if profile.username.is_empty() {
-                                        profile.username = vault.get_username(&profile.id)
-                                            .ok().flatten().unwrap_or_default();
-                                    }
-                                    if profile.auth_method == AuthMethod::Password {
-                                        if let Ok(Some(pw)) = vault.get_password(&profile.id) {
-                                            pending_password = pw;
-                                            app.sidebar.vault_password_loaded = true;
+                                ui.horizontal(|ui| {
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut vault_key_input)
+                                            .password(true)
+                                            .hint_text("Clé maître du vault")
+                                            .desired_width(160.0),
+                                    );
+                                    let can_unlock = !vault_key_input.is_empty();
+                                    if ui.add_enabled(can_unlock, egui::Button::new("🔓 Déverrouiller")).clicked() {
+                                        let vault = Vault::new(vault_key_input.clone());
+                                        if profile.host.is_empty() {
+                                            profile.host = vault.get_host(&profile.id)
+                                                .ok().flatten().unwrap_or_default();
                                         }
+                                        if profile.username.is_empty() {
+                                            profile.username = vault.get_username(&profile.id)
+                                                .ok().flatten().unwrap_or_default();
+                                        }
+                                        if profile.auth_method == AuthMethod::Password {
+                                            if let Ok(Some(pw)) = vault.get_password(&profile.id) {
+                                                pending_password = pw;
+                                                app.sidebar.vault_password_loaded = true;
+                                            }
+                                        }
+                                        app.vault = Some(vault);
+                                        app.hydrate_profiles_from_vault();
+                                        vault_key_input.clear();
                                     }
-                                    app.vault = Some(vault);
-                                    app.hydrate_profiles_from_vault();
-                                    vault_key_input.clear();
-                                }
-                            });
-                        }
-                    });
-                    ui.end_row();
-
-                    // Sélecteur de fichier clé si auth par clé privée.
-                    if let AuthMethod::PublicKey { identity_file } = &mut profile.auth_method {
-                        ui.label("Fichier clé :");
-                        ui.horizontal(|ui| {
-                            ui.text_edit_singleline(identity_file);
-                            if ui.button("…").on_hover_text("Parcourir…").clicked() {
-                                if let Some(p) = rfd::FileDialog::new()
-                                    .set_title("Sélectionner la clé privée")
-                                    .pick_file()
-                                {
-                                    *identity_file = p.to_string_lossy().into_owned();
-                                }
+                                });
                             }
                         });
                         ui.end_row();
-                    }
 
-                    // ── Options avancées ───────────────────────────────────────
-                    ui.label("Étiquettes :");
-                    let mut tags_str = profile.tags.join(", ");
-                    if ui.text_edit_singleline(&mut tags_str)
-                        .on_hover_text("Séparées par des virgules (ex: prod, web)")
-                        .changed()
-                    {
-                        profile.tags = tags_str
-                            .split(',')
-                            .map(|s| s.trim().to_string())
-                            .filter(|s| !s.is_empty())
-                            .collect();
-                    }
-                    ui.end_row();
+                        if let AuthMethod::PublicKey { identity_file } = &mut profile.auth_method {
+                            ui.label("Fichier clé :");
+                            ui.horizontal(|ui| {
+                                ui.text_edit_singleline(identity_file);
+                                if ui.button("…").on_hover_text("Parcourir…").clicked() {
+                                    if let Some(p) = rfd::FileDialog::new()
+                                        .set_title("Sélectionner la clé privée")
+                                        .pick_file()
+                                    {
+                                        *identity_file = p.to_string_lossy().into_owned();
+                                    }
+                                }
+                            });
+                            ui.end_row();
+                        }
 
-                    ui.label("Hôte de saut :");
-                    let mut jump = profile.jump_host.clone().unwrap_or_default();
-                    if ui.text_edit_singleline(&mut jump)
-                        .on_hover_text("Bastion / ProxyJump (ex: bastion.example.com)")
-                        .changed()
-                    {
-                        profile.jump_host = if jump.is_empty() { None } else { Some(jump) };
-                    }
-                    ui.end_row();
+                        ui.label("Étiquettes :");
+                        let mut tags_str = profile.tags.join(", ");
+                        if ui.text_edit_singleline(&mut tags_str)
+                            .on_hover_text("Séparées par des virgules (ex: prod, web)")
+                            .changed()
+                        {
+                            profile.tags = tags_str
+                                .split(',')
+                                .map(|s| s.trim().to_string())
+                                .filter(|s| !s.is_empty())
+                                .collect();
+                        }
+                        ui.end_row();
 
-                    ui.label("Timeout (s) :");
-                    ui.add(
-                        egui::Slider::new(&mut profile.connection_timeout_secs, 5..=120)
-                            .suffix(" s"),
-                    );
-                    ui.end_row();
+                        ui.label("Hôte de saut :");
+                        let mut jump = profile.jump_host.clone().unwrap_or_default();
+                        if ui.text_edit_singleline(&mut jump)
+                            .on_hover_text("Bastion / ProxyJump (ex: bastion.example.com)")
+                            .changed()
+                        {
+                            profile.jump_host = if jump.is_empty() { None } else { Some(jump) };
+                        }
+                        ui.end_row();
+
+                        ui.label("Timeout (s) :");
+                        ui.add(
+                            egui::Slider::new(&mut profile.connection_timeout_secs, 5..=120)
+                                .suffix(" s"),
+                        );
+                        ui.end_row();
+                    });
+
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(6.0);
+
+                ui.horizontal(|ui| {
+                    if ui.button("💾 Sauvegarder").clicked() { action = DialogAction::Save; }
+                    if ui.button("🔌 Connecter").clicked()   { action = DialogAction::Connect; }
+                    if ui.button("✕ Annuler").clicked()      { action = DialogAction::Cancel; }
                 });
-
-            ui.add_space(12.0);
-            ui.separator();
-            ui.add_space(6.0);
-
-            // ── Boutons d'action ───────────────────────────────────────────────
-            if needs_vault_unlock {
-                ui.label(
-                    egui::RichText::new(
-                        "⚠ Déverrouillez le vault pour accéder aux données chiffrées."
-                    )
-                    .small()
-                    .color(egui::Color32::from_rgb(220, 160, 60)),
-                );
             }
-            ui.horizontal(|ui| {
-                if ui.add_enabled(!needs_vault_unlock, egui::Button::new("💾 Sauvegarder"))
-                    .on_hover_text(if needs_vault_unlock { "Déverrouillez le vault d'abord" } else { "" })
-                    .clicked() { action = DialogAction::Save; }
-                if ui.add_enabled(!needs_vault_unlock, egui::Button::new("🔌 Connecter"))
-                    .on_hover_text(if needs_vault_unlock { "Déverrouillez le vault d'abord" } else { "" })
-                    .clicked() { action = DialogAction::Connect; }
-                if ui.button("✕ Annuler").clicked()         { action = DialogAction::Cancel; }
-            });
         });
 
     // Réécriture des clones édités dans l'état de la sidebar.
