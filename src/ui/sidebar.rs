@@ -1,7 +1,7 @@
 /// Barre latérale gauche : liste des profils de connexion avec recherche,
 /// tri et bouton de création. Double-clic sur un profil → ouvre un onglet SSH.
 use crate::app::BetterSshApp;
-use crate::config::{AuthMethod, ConnectionProfile};
+use crate::config::{AuthMethod, ConnectionProfile, Vault};
 use egui::Ui;
 
 // ─── État de la barre latérale ────────────────────────────────────────────────
@@ -17,6 +17,10 @@ pub struct SidebarState {
     pub edit_profile: Option<ConnectionProfile>,
     /// Mot de passe saisi dans le formulaire (en mémoire non persistée).
     pub pending_password: String,
+    /// Saisie de la clé maître du vault dans le dialogue de profil.
+    pub vault_key_input: String,
+    /// true si pending_password a été pré-chargé automatiquement depuis le vault.
+    pub vault_password_loaded: bool,
 }
 
 impl SidebarState {
@@ -27,6 +31,8 @@ impl SidebarState {
             show_new_profile: false,
             edit_profile: None,
             pending_password: String::new(),
+            vault_key_input: String::new(),
+            vault_password_loaded: false,
         }
     }
 }
@@ -48,6 +54,9 @@ pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
     // ── Bouton nouveau profil ─────────────────────────────────────────────────
     if ui.button("＋ Nouvelle connexion").clicked() {
         app.sidebar.edit_profile = Some(ConnectionProfile::default());
+        app.sidebar.pending_password.clear();
+        app.sidebar.vault_key_input.clear();
+        app.sidebar.vault_password_loaded = false;
         app.sidebar.show_new_profile = true;
     }
 
@@ -119,6 +128,18 @@ pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
         // Pour les profils avec authentification par mot de passe, on ouvre d'abord
         // le dialogue pour permettre la saisie du mot de passe.
         if matches!(profile.auth_method, AuthMethod::Password) {
+            // Tente de pré-charger le mot de passe depuis le vault si disponible.
+            let (pw, loaded) = if let Some(vault) = &app.vault {
+                match vault.get_password(&profile.id) {
+                    Ok(Some(p)) => (p, true),
+                    _           => (String::new(), false),
+                }
+            } else {
+                (String::new(), false)
+            };
+            app.sidebar.pending_password      = pw;
+            app.sidebar.vault_password_loaded = loaded;
+            app.sidebar.vault_key_input.clear();
             app.sidebar.edit_profile = Some(profile);
             app.sidebar.show_new_profile = true;
         } else {
@@ -127,7 +148,24 @@ pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
         }
     }
     if let Some(i) = to_edit {
-        app.sidebar.edit_profile = Some(app.sidebar.profiles[i].clone());
+        let profile = app.sidebar.profiles[i].clone();
+        // Pré-charge le mot de passe si l'auth est par password et le vault est ouvert.
+        let (pw, loaded) = if matches!(profile.auth_method, AuthMethod::Password) {
+            if let Some(vault) = &app.vault {
+                match vault.get_password(&profile.id) {
+                    Ok(Some(p)) => (p, true),
+                    _           => (String::new(), false),
+                }
+            } else {
+                (String::new(), false)
+            }
+        } else {
+            (String::new(), false)
+        };
+        app.sidebar.pending_password      = pw;
+        app.sidebar.vault_password_loaded = loaded;
+        app.sidebar.vault_key_input.clear();
+        app.sidebar.edit_profile = Some(profile);
         app.sidebar.show_new_profile = true;
     }
     if let Some(i) = to_delete {
@@ -156,6 +194,7 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
         .clone()
         .unwrap_or_else(ConnectionProfile::default);
     let mut pending_password = app.sidebar.pending_password.clone();
+    let mut vault_key_input  = app.sidebar.vault_key_input.clone();
     let mut action = DialogAction::None;
 
     let title = if profile.name.is_empty() { "Nouvelle connexion" } else { "Modifier le profil" };
@@ -220,11 +259,55 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                     // Champ mot de passe (masqué) si auth par password.
                     if profile.auth_method == AuthMethod::Password {
                         ui.label("Mot de passe :");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut pending_password)
-                                .password(true)
-                                .hint_text("Stocké chiffré dans le vault"),
-                        );
+                        ui.vertical(|ui| {
+                            if app.sidebar.vault_password_loaded {
+                                ui.label(
+                                    egui::RichText::new("✓ Chargé depuis le vault")
+                                        .small()
+                                        .color(egui::Color32::from_rgb(80, 200, 80)),
+                                );
+                            }
+                            ui.add(
+                                egui::TextEdit::singleline(&mut pending_password)
+                                    .password(true)
+                                    .hint_text(if app.sidebar.vault_password_loaded {
+                                        "Laisser vide pour réutiliser le vault"
+                                    } else {
+                                        "Mot de passe SSH"
+                                    }),
+                            );
+                        });
+                        ui.end_row();
+
+                        // ── Section vault ──────────────────────────────────────
+                        ui.label("Vault :");
+                        ui.vertical(|ui| {
+                            if app.vault.is_some() {
+                                ui.label(
+                                    egui::RichText::new("🔓 Vault déverrouillé")
+                                        .small()
+                                        .color(egui::Color32::from_rgb(80, 200, 80)),
+                                );
+                                ui.label(
+                                    egui::RichText::new(
+                                        "Le mot de passe sera chiffré et sauvegardé automatiquement."
+                                    )
+                                    .small()
+                                    .weak(),
+                                );
+                            } else {
+                                ui.label(
+                                    egui::RichText::new("🔒 Vault verrouillé").small().weak(),
+                                );
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut vault_key_input)
+                                        .password(true)
+                                        .hint_text(
+                                            "Clé maître du vault (laisser vide = ne pas sauvegarder)"
+                                        ),
+                                );
+                            }
+                        });
                         ui.end_row();
                     }
 
@@ -290,36 +373,70 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
             });
         });
 
-    // Réécriture du clone édité dans l'état de la sidebar.
-    app.sidebar.edit_profile = Some(profile.clone());
+    // Réécriture des clones édités dans l'état de la sidebar.
+    app.sidebar.edit_profile    = Some(profile.clone());
     app.sidebar.pending_password = pending_password;
+    app.sidebar.vault_key_input  = vault_key_input;
 
     // Application de l'action choisie (hors closure pour éviter les conflits de borrow).
     match action {
         DialogAction::Save => {
+            // Déverrouille le vault si une clé vient d'être saisie.
+            if app.vault.is_none() && !app.sidebar.vault_key_input.is_empty() {
+                app.vault = Some(Vault::new(app.sidebar.vault_key_input.clone()));
+            }
+            // Sauvegarde le mot de passe dans le vault si disponible et non vide.
+            if let Some(vault) = &app.vault {
+                if !app.sidebar.pending_password.is_empty() {
+                    if let Err(e) = vault.store_password(&profile.id, &app.sidebar.pending_password) {
+                        log::error!("Impossible de sauvegarder dans le vault : {e}");
+                    }
+                }
+            }
             upsert_profile(&mut app.sidebar.profiles, profile);
             app.save_config();
             app.sidebar.edit_profile = None;
             app.sidebar.pending_password.clear();
+            app.sidebar.vault_key_input.clear();
+            app.sidebar.vault_password_loaded = false;
             app.sidebar.show_new_profile = false;
         }
         DialogAction::Connect => {
+            // Déverrouille le vault si une clé vient d'être saisie.
+            if app.vault.is_none() && !app.sidebar.vault_key_input.is_empty() {
+                app.vault = Some(Vault::new(app.sidebar.vault_key_input.clone()));
+            }
             upsert_profile(&mut app.sidebar.profiles, profile.clone());
             app.save_config();
-            // Transmet le mot de passe saisi uniquement s'il est non vide.
-            let pw = if app.sidebar.pending_password.is_empty() {
-                None
-            } else {
+
+            let pw = if !app.sidebar.pending_password.is_empty() {
+                // Nouveau mot de passe saisi → le stocker dans le vault si disponible.
+                if let Some(vault) = &app.vault {
+                    if let Err(e) = vault.store_password(&profile.id, &app.sidebar.pending_password) {
+                        log::error!("Impossible de sauvegarder dans le vault : {e}");
+                    }
+                }
                 Some(app.sidebar.pending_password.clone())
+            } else if app.sidebar.vault_password_loaded {
+                // Mot de passe vide mais pré-chargé du vault → le recharger pour la session.
+                app.vault.as_ref()
+                    .and_then(|v| v.get_password(&profile.id).ok().flatten())
+            } else {
+                None
             };
+
             app.open_profile(profile, pw);
             app.sidebar.edit_profile = None;
             app.sidebar.pending_password.clear();
+            app.sidebar.vault_key_input.clear();
+            app.sidebar.vault_password_loaded = false;
             app.sidebar.show_new_profile = false;
         }
         DialogAction::Cancel => {
             app.sidebar.edit_profile = None;
             app.sidebar.pending_password.clear();
+            app.sidebar.vault_key_input.clear();
+            app.sidebar.vault_password_loaded = false;
             app.sidebar.show_new_profile = false;
         }
         DialogAction::None => {}

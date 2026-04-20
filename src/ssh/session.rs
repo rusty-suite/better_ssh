@@ -130,12 +130,16 @@ async fn run_session(
     event_tx: Sender<SessionEvent>,
 ) -> Result<()> {
     // Configure le client SSH.
-    // inactivity_timeout = None : on laisse le serveur gérer les keepalives.
-    // Une valeur non-None ferait que russh déconnecte après N secondes sans message
-    // SSH au niveau protocole, ce qui ferme le shell interactif quand l'utilisateur
-    // ne tape rien pendant ce délai.
+    // inactivity_timeout = None : russh ne coupe pas de son côté après N secondes d'idle.
+    // keepalive_interval = 30 s : le client envoie un paquet SSH keepalive toutes les
+    //   30 secondes d'inactivité, ce qui empêche le serveur (sshd) de couper la connexion
+    //   à cause de son propre ClientAliveInterval.
+    // keepalive_max = 3 : si 3 keepalives consécutifs restent sans réponse, russh
+    //   déconnecte proprement au lieu de bloquer indéfiniment.
     let config = Arc::new(client::Config {
         inactivity_timeout: None,
+        keepalive_interval: Some(Duration::from_secs(30)),
+        keepalive_max: 3,
         ..<_>::default()
     });
 

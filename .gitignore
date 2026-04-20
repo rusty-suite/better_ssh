@@ -1,0 +1,31 @@
+# Build artifacts
+/target/
+
+# Claude Code session data (local only)
+.claude/
+
+# Packaged binaries (cargo-bundle output)
+*.exe
+*.msi
+*.AppImage
+*.deb
+*.rpm
+
+# Secrets — never commit these
+.env
+*.pem
+*.key
+vault.toml
+
+# Editor and OS noise
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Profiling / coverage
+*.profraw
+*.profdata
+lcov.info
