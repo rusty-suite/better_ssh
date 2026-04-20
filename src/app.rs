@@ -175,6 +175,23 @@ impl BetterSshApp {
         }
     }
 
+    /// Déchiffre et injecte hôte + utilisateur depuis le vault dans tous les profils
+    /// en mémoire. À appeler dès que le vault vient d'être déverrouillé.
+    pub fn hydrate_profiles_from_vault(&mut self) {
+        if let Some(vault) = &self.vault {
+            for profile in &mut self.sidebar.profiles {
+                if profile.host.is_empty() {
+                    profile.host = vault.get_host(&profile.id)
+                        .ok().flatten().unwrap_or_default();
+                }
+                if profile.username.is_empty() {
+                    profile.username = vault.get_username(&profile.id)
+                        .ok().flatten().unwrap_or_default();
+                }
+            }
+        }
+    }
+
     /// Applique la taille de police dans tous les onglets ouverts et dans egui.
     pub fn apply_font_size(&mut self, ctx: &Context, size: f32) {
         self.config.terminal.font_size = size;

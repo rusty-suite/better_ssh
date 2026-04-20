@@ -86,7 +86,13 @@ pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
             // Indicateur visuel si une session est déjà ouverte pour ce profil.
             let is_active = app.tabs.iter().any(|t| t.profile.id == profile.id);
             let indicator = if is_active { "●" } else { "○" };
-            let label = format!("{indicator} {}@{}", profile.username, profile.display_name());
+            // Quand le vault est verrouillé, hôte et utilisateur sont vides.
+            let vault_locked = profile.host.is_empty() || profile.username.is_empty();
+            let label = if vault_locked {
+                format!("{indicator} {} [🔒]", profile.display_name())
+            } else {
+                format!("{indicator} {}@{}", profile.username, profile.display_name())
+            };
             let tags = profile.tags.clone();
 
             egui::Frame::none()
@@ -96,10 +102,12 @@ pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
                         let resp = ui.selectable_label(is_active, &label);
                         // Double-clic → ouvrir la session
                         if resp.double_clicked() { to_open = Some(i); }
-                        resp.on_hover_text(format!(
-                            "{}:{}\nDouble-clic pour connecter",
-                            profile.host, profile.port
-                        ));
+                        let hover = if vault_locked {
+                            format!("Port : {}\n🔒 Vault verrouillé — déverrouillez pour voir l'hôte\nDouble-clic pour connecter", profile.port)
+                        } else {
+                            format!("{}:{}\nDouble-clic pour connecter", profile.host, profile.port)
+                        };
+                        resp.on_hover_text(hover);
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.small_button("🗑").on_hover_text("Supprimer").clicked() {
@@ -124,32 +132,46 @@ pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
 
     // ── Traitement des actions (hors boucle pour éviter les double-borrows) ───
     if let Some(i) = to_open {
-        let profile = app.sidebar.profiles[i].clone();
-        // Pour les profils avec authentification par mot de passe, on ouvre d'abord
-        // le dialogue pour permettre la saisie du mot de passe.
-        if matches!(profile.auth_method, AuthMethod::Password) {
-            // Tente de pré-charger le mot de passe depuis le vault si disponible.
-            let (pw, loaded) = if let Some(vault) = &app.vault {
+        let mut profile = app.sidebar.profiles[i].clone();
+        // Charge hôte et utilisateur depuis le vault si disponible.
+        if let Some(vault) = &app.vault {
+            if profile.host.is_empty() {
+                profile.host = vault.get_host(&profile.id).ok().flatten().unwrap_or_default();
+            }
+            if profile.username.is_empty() {
+                profile.username = vault.get_username(&profile.id).ok().flatten().unwrap_or_default();
+            }
+        }
+        // Ouvre toujours le dialogue (nécessaire pour déverrouiller le vault si besoin).
+        let (pw, loaded) = if matches!(profile.auth_method, AuthMethod::Password) {
+            if let Some(vault) = &app.vault {
                 match vault.get_password(&profile.id) {
                     Ok(Some(p)) => (p, true),
                     _           => (String::new(), false),
                 }
             } else {
                 (String::new(), false)
-            };
-            app.sidebar.pending_password      = pw;
-            app.sidebar.vault_password_loaded = loaded;
-            app.sidebar.vault_key_input.clear();
-            app.sidebar.edit_profile = Some(profile);
-            app.sidebar.show_new_profile = true;
+            }
         } else {
-            // Clé privée ou agent SSH → connexion directe sans mot de passe.
-            app.open_profile(profile, None);
-        }
+            (String::new(), false)
+        };
+        app.sidebar.pending_password      = pw;
+        app.sidebar.vault_password_loaded = loaded;
+        app.sidebar.vault_key_input.clear();
+        app.sidebar.edit_profile = Some(profile);
+        app.sidebar.show_new_profile = true;
     }
     if let Some(i) = to_edit {
-        let profile = app.sidebar.profiles[i].clone();
-        // Pré-charge le mot de passe si l'auth est par password et le vault est ouvert.
+        let mut profile = app.sidebar.profiles[i].clone();
+        // Charge hôte, utilisateur et mot de passe depuis le vault.
+        if let Some(vault) = &app.vault {
+            if profile.host.is_empty() {
+                profile.host = vault.get_host(&profile.id).ok().flatten().unwrap_or_default();
+            }
+            if profile.username.is_empty() {
+                profile.username = vault.get_username(&profile.id).ok().flatten().unwrap_or_default();
+            }
+        }
         let (pw, loaded) = if matches!(profile.auth_method, AuthMethod::Password) {
             if let Some(vault) = &app.vault {
                 match vault.get_password(&profile.id) {
@@ -169,6 +191,13 @@ pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
         app.sidebar.show_new_profile = true;
     }
     if let Some(i) = to_delete {
+        let id = app.sidebar.profiles[i].id.clone();
+        // Supprime aussi les secrets du vault pour ce profil.
+        if let Some(vault) = &app.vault {
+            if let Err(e) = vault.remove_profile(&id) {
+                log::error!("Impossible de supprimer les secrets vault du profil {id} : {e}");
+            }
+        }
         app.sidebar.profiles.remove(i);
         app.save_config();
     }
@@ -187,6 +216,16 @@ enum DialogAction { Save, Connect, Cancel, None }
 /// Fenêtre modale de création ou d'édition d'un profil SSH.
 /// Travaille sur un clone pour éviter les double-borrows de `app.sidebar`.
 fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
+    // Si le vault vient d'être déverrouillé, hydrate hôte/username du profil en cours.
+    if let (Some(vault), Some(ep)) = (&app.vault, &mut app.sidebar.edit_profile) {
+        if ep.host.is_empty() {
+            ep.host = vault.get_host(&ep.id).ok().flatten().unwrap_or_default();
+        }
+        if ep.username.is_empty() {
+            ep.username = vault.get_username(&ep.id).ok().flatten().unwrap_or_default();
+        }
+    }
+
     // Clone temporaire : édité dans la fenêtre, réintégré seulement si Save/Connect.
     let mut profile = app
         .sidebar
@@ -278,38 +317,44 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                             );
                         });
                         ui.end_row();
-
-                        // ── Section vault ──────────────────────────────────────
-                        ui.label("Vault :");
-                        ui.vertical(|ui| {
-                            if app.vault.is_some() {
-                                ui.label(
-                                    egui::RichText::new("🔓 Vault déverrouillé")
-                                        .small()
-                                        .color(egui::Color32::from_rgb(80, 200, 80)),
-                                );
-                                ui.label(
-                                    egui::RichText::new(
-                                        "Le mot de passe sera chiffré et sauvegardé automatiquement."
-                                    )
-                                    .small()
-                                    .weak(),
-                                );
-                            } else {
-                                ui.label(
-                                    egui::RichText::new("🔒 Vault verrouillé").small().weak(),
-                                );
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut vault_key_input)
-                                        .password(true)
-                                        .hint_text(
-                                            "Clé maître du vault (laisser vide = ne pas sauvegarder)"
-                                        ),
-                                );
-                            }
-                        });
-                        ui.end_row();
                     }
+
+                    // ── Section vault (toujours visible) ──────────────────────
+                    // Hôte et utilisateur sont chiffrés → vault requis pour tous les profils.
+                    ui.label("Vault :");
+                    ui.vertical(|ui| {
+                        if app.vault.is_some() {
+                            ui.label(
+                                egui::RichText::new("🔓 Vault déverrouillé")
+                                    .small()
+                                    .color(egui::Color32::from_rgb(80, 200, 80)),
+                            );
+                            ui.label(
+                                egui::RichText::new(
+                                    "Hôte, utilisateur et mot de passe seront chiffrés."
+                                )
+                                .small()
+                                .weak(),
+                            );
+                        } else {
+                            ui.label(
+                                egui::RichText::new("🔒 Vault verrouillé").small().weak(),
+                            );
+                            ui.label(
+                                egui::RichText::new(
+                                    "Requis pour chiffrer hôte et utilisateur."
+                                )
+                                .small()
+                                .weak(),
+                            );
+                            ui.add(
+                                egui::TextEdit::singleline(&mut vault_key_input)
+                                    .password(true)
+                                    .hint_text("Clé maître du vault"),
+                            );
+                        }
+                    });
+                    ui.end_row();
 
                     // Sélecteur de fichier clé si auth par clé privée.
                     if let AuthMethod::PublicKey { identity_file } = &mut profile.auth_method {
@@ -384,12 +429,23 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
             // Déverrouille le vault si une clé vient d'être saisie.
             if app.vault.is_none() && !app.sidebar.vault_key_input.is_empty() {
                 app.vault = Some(Vault::new(app.sidebar.vault_key_input.clone()));
+                app.hydrate_profiles_from_vault();
             }
-            // Sauvegarde le mot de passe dans le vault si disponible et non vide.
+            // Chiffre et sauvegarde hôte, utilisateur et mot de passe dans le vault.
             if let Some(vault) = &app.vault {
+                if !profile.host.is_empty() {
+                    if let Err(e) = vault.store_host(&profile.id, &profile.host) {
+                        log::error!("Impossible de sauvegarder l'hôte dans le vault : {e}");
+                    }
+                }
+                if !profile.username.is_empty() {
+                    if let Err(e) = vault.store_username(&profile.id, &profile.username) {
+                        log::error!("Impossible de sauvegarder l'utilisateur dans le vault : {e}");
+                    }
+                }
                 if !app.sidebar.pending_password.is_empty() {
                     if let Err(e) = vault.store_password(&profile.id, &app.sidebar.pending_password) {
-                        log::error!("Impossible de sauvegarder dans le vault : {e}");
+                        log::error!("Impossible de sauvegarder le mot de passe dans le vault : {e}");
                     }
                 }
             }
@@ -405,6 +461,20 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
             // Déverrouille le vault si une clé vient d'être saisie.
             if app.vault.is_none() && !app.sidebar.vault_key_input.is_empty() {
                 app.vault = Some(Vault::new(app.sidebar.vault_key_input.clone()));
+                app.hydrate_profiles_from_vault();
+            }
+            // Chiffre et sauvegarde hôte, utilisateur et mot de passe dans le vault.
+            if let Some(vault) = &app.vault {
+                if !profile.host.is_empty() {
+                    if let Err(e) = vault.store_host(&profile.id, &profile.host) {
+                        log::error!("Impossible de sauvegarder l'hôte dans le vault : {e}");
+                    }
+                }
+                if !profile.username.is_empty() {
+                    if let Err(e) = vault.store_username(&profile.id, &profile.username) {
+                        log::error!("Impossible de sauvegarder l'utilisateur dans le vault : {e}");
+                    }
+                }
             }
             upsert_profile(&mut app.sidebar.profiles, profile.clone());
             app.save_config();
@@ -413,7 +483,7 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                 // Nouveau mot de passe saisi → le stocker dans le vault si disponible.
                 if let Some(vault) = &app.vault {
                     if let Err(e) = vault.store_password(&profile.id, &app.sidebar.pending_password) {
-                        log::error!("Impossible de sauvegarder dans le vault : {e}");
+                        log::error!("Impossible de sauvegarder le mot de passe dans le vault : {e}");
                     }
                 }
                 Some(app.sidebar.pending_password.clone())
