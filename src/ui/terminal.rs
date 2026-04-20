@@ -284,7 +284,8 @@ impl TerminalState {
 
 /// Retourne les octets à envoyer au serveur SSH si l'utilisateur a validé une saisie,
 /// `None` sinon (pas de saisie cette frame).
-pub fn render(state: &mut TerminalState, ui: &mut Ui) -> Option<Vec<u8>> {
+/// `modal_open` : si true, le terminal ne vole pas le focus (un dialogue est ouvert).
+pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Option<Vec<u8>> {
     // Couleur de fond du terminal (inspirée du thème Dracula).
     let bg = Color32::from_rgb(20, 20, 30);
 
@@ -372,8 +373,9 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui) -> Option<Vec<u8>> {
                     .frame(false)
                     .text_color(Color32::TRANSPARENT),
             );
-            // Maintient le focus sur la saisie pour capturer les touches.
-            if !response.has_focus() {
+            // Ne vole le focus que si aucun dialogue modal n'est ouvert.
+            // Sinon les champs texte des dialogues (IP, utilisateur…) seraient inutilisables.
+            if !modal_open && !response.has_focus() {
                 response.request_focus();
             }
 
