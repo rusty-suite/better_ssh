@@ -1,4 +1,5 @@
 #![allow(dead_code, unused_imports, unused_variables, unused_mut)]
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod app;
 mod assets;
