@@ -11,6 +11,8 @@ pub mod terminal;
 
 use crate::app::{apply_theme, setup_fonts, BetterSshApp, ScanConnectDialog};
 use crate::config::{AuthMethod, ConnectionProfile, Vault};
+use crate::ssh::session::SftpCommand;
+use crate::ui::file_explorer::SftpRequest;
 use crate::ui::network_scan::ScanAction;
 use egui::Context;
 
@@ -94,11 +96,22 @@ fn render_main_area(app: &mut BetterSshApp, ctx: &Context) {
 
         // L'explorateur SFTP s'affiche à droite en split-pane.
         if show_explorer {
+            let username    = app.tabs[idx].profile.username.clone();
+            // L'UID numérique de l'utilisateur courant n'est pas encore disponible
+            // sans requête SSH supplémentaire (future évolution).
+            let current_uid: Option<u32> = None;
+            let mut sftp_req: Option<file_explorer::SftpRequest> = None;
             egui::SidePanel::right("file_explorer")
-                .default_width(300.0)
+                .default_width(360.0)
                 .show_inside(ui, |ui| {
-                    file_explorer::render(&mut app.tabs[idx].file_explorer, ui);
+                    sftp_req = file_explorer::render(
+                        &mut app.tabs[idx].file_explorer, ui, &username, current_uid,
+                    );
                 });
+            // Traitement de la requête SFTP retournée par l'explorateur.
+            if let Some(req) = sftp_req {
+                handle_sftp_request(app, idx, req);
+            }
         }
 
         // Le terminal occupe le reste de la zone centrale.
@@ -732,4 +745,75 @@ fn render_scan_connect_dialog(app: &mut BetterSshApp, ctx: &Context) {
 
     // Pas d'action → remet le dialogue dans l'app pour continuer l'affichage.
     app.pending_scan_connect = Some(dlg);
+}
+
+// ─── Gestion des requêtes SFTP de l'explorateur ───────────────────────────────
+
+/// Traduit une requête UI de l'explorateur en commande SFTP réelle et l'envoie
+/// à la task SFTP de l'onglet courant. Le résultat arrivera via SessionEvent.
+fn handle_sftp_request(app: &mut BetterSshApp, tab_idx: usize, req: SftpRequest) {
+    if tab_idx >= app.tabs.len() { return; }
+
+    match req {
+        SftpRequest::ListDir(path) => {
+            app.tabs[tab_idx].file_explorer.loading = true;
+            app.tabs[tab_idx].file_explorer.entries.clear();
+            if let Some(session) = &app.tabs[tab_idx].session {
+                session.send_sftp(SftpCommand::ListDir(path));
+            }
+        }
+        SftpRequest::Rename { from, to } => {
+            if let Some(session) = &app.tabs[tab_idx].session {
+                session.send_sftp(SftpCommand::Rename { from, to });
+            }
+        }
+        SftpRequest::DeletePaths(paths) => {
+            // Identifie les dossiers avant le retrait optimiste de l'affichage.
+            let dir_paths: std::collections::HashSet<String> = app.tabs[tab_idx]
+                .file_explorer.entries.iter()
+                .filter(|e| e.is_dir && paths.contains(&e.path))
+                .map(|e| e.path.clone())
+                .collect();
+            // Retrait optimiste : la liste se rafraîchira via SftpOpResult.
+            let paths_set: std::collections::HashSet<String> = paths.iter().cloned().collect();
+            app.tabs[tab_idx].file_explorer.entries
+                .retain(|e| !paths_set.contains(&e.path));
+            if let Some(session) = &app.tabs[tab_idx].session {
+                for path in paths {
+                    if dir_paths.contains(&path) {
+                        session.send_sftp(SftpCommand::DeleteDir(path));
+                    } else {
+                        session.send_sftp(SftpCommand::Delete(path));
+                    }
+                }
+            }
+        }
+        SftpRequest::MovePaths { paths, dest } => {
+            if let Some(session) = &app.tabs[tab_idx].session {
+                session.send_sftp(SftpCommand::MovePaths { paths, dest });
+            }
+        }
+        SftpRequest::Mkdir(path) => {
+            if let Some(session) = &app.tabs[tab_idx].session {
+                session.send_sftp(SftpCommand::Mkdir(path));
+            }
+        }
+        SftpRequest::CreateFile(path) => {
+            if let Some(session) = &app.tabs[tab_idx].session {
+                session.send_sftp(SftpCommand::CreateFile(path));
+            }
+        }
+        SftpRequest::Download { remote } => {
+            // Demande le chemin local via un dialogue natif.
+            if let Some(local) = rfd::FileDialog::new()
+                .set_title("Enregistrer sous…")
+                .set_file_name(remote.rsplit('/').next().unwrap_or("fichier"))
+                .save_file()
+            {
+                if let Some(session) = &app.tabs[tab_idx].session {
+                    session.send_sftp(SftpCommand::Download { remote, local });
+                }
+            }
+        }
+    }
 }
