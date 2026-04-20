@@ -115,4 +115,10 @@ impl SftpClient {
         self.session.write(path, &[] as &[u8]).await?;
         Ok(())
     }
+
+    /// Retourne l'UID numérique de l'utilisateur courant en statant ".".
+    /// Le répertoire courant SFTP appartient à l'utilisateur connecté.
+    pub async fn get_current_uid(&self) -> Option<u32> {
+        self.session.metadata(".").await.ok()?.uid
+    }
 }

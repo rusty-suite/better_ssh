@@ -363,6 +363,9 @@ fn poll_session_events(app: &mut BetterSshApp) {
                         tab.file_explorer.loaded  = true;
                     }
                 }
+                SessionEvent::SftpUid(uid) => {
+                    tab.file_explorer.current_uid = Some(uid);
+                }
                 SessionEvent::SftpOpResult { op, ok, msg } => {
                     if ok {
                         tab.file_explorer.add_toast(format!("✓ {op}"));
