@@ -1,6 +1,6 @@
 [package]
 name = "betterssh"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 authors = ["rusty-suite"]
 description = "A modern, secure SSH client with multi-tab sessions, network scanner, SFTP explorer and encrypted password vault"
@@ -36,7 +36,7 @@ dirs = "5"
 rfd = "0.14"
 dark-light = "1"
 log = "0.4"
-env_logger = "0.11"
+fern = "0.7"
 base64 = "0.22"
 sha2 = "0.10"
 rand = "0.8"
