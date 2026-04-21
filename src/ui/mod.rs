@@ -732,9 +732,17 @@ fn render_scan_connect_dialog(app: &mut BetterSshApp, ctx: &Context) {
         }
         app.save_config();
 
-        // ── 3. Stocker le mot de passe dans le vault si disponible ────────────
+        // ── 3. Stocker hôte, utilisateur et mot de passe dans le vault ──────────
+        if let Some(vault) = &app.vault {
+            if let Err(e) = vault.store_host(&profile_id, &profile.host) {
+                log::error!("Impossible de sauvegarder l'hôte dans le vault : {e}");
+            }
+            if let Err(e) = vault.store_username(&profile_id, &dlg.username) {
+                log::error!("Impossible de sauvegarder l'utilisateur dans le vault : {e}");
+            }
+        }
+
         let password_to_use = if !dlg.password.is_empty() {
-            // Nouveau mot de passe saisi → stocker dans le vault.
             if let Some(vault) = &app.vault {
                 if let Err(e) = vault.store_password(&profile_id, &dlg.password) {
                     log::error!("Impossible de sauvegarder dans le vault : {e}");

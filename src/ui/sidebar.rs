@@ -333,11 +333,23 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                             .on_hover_text("Nom affiché dans la barre latérale");
                         ui.end_row();
 
-                        ui.label("Hôte :");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut profile.host)
-                                .hint_text("Adresse IP ou nom DNS"),
-                        ).on_hover_text("Adresse IP ou nom DNS");
+                        ui.label("Hôte (IP) :");
+                        ui.vertical(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut profile.host)
+                                    .hint_text("Adresse IP ou nom DNS"),
+                            ).on_hover_text("Adresse IP ou nom DNS");
+                            // Avertissement si le champ est vide alors que le vault est ouvert.
+                            // Cela arrive pour les profils créés avant le chiffrement de l'hôte,
+                            // ou via le scan réseau sans vault actif.
+                            if profile.host.is_empty() {
+                                ui.label(
+                                    egui::RichText::new("⚠ Adresse manquante — à renseigner")
+                                        .small()
+                                        .color(egui::Color32::from_rgb(240, 160, 40)),
+                                );
+                            }
+                        });
                         ui.end_row();
 
                         ui.label("Port :");
