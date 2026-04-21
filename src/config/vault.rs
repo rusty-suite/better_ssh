@@ -1,9 +1,11 @@
 /// Vault chiffré pour les secrets SSH (mot de passe, hôte, nom d'utilisateur).
 /// Utilise la bibliothèque `age` (chiffrement asymétrique/passphrase).
 /// Les entrées sont encodées en base64 et stockées dans vault.toml.
+/// Un SHA-256 du mot de passe maître est stocké pour vérifier la clé avant déchiffrement.
 use age::secrecy::SecretString;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 
@@ -39,7 +41,23 @@ impl VaultEntry {
 /// Contenu du fichier vault.toml : map profile_id → secrets chiffrés.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct VaultData {
+    /// SHA-256 (hex) du mot de passe maître.
+    /// Absent sur les vaults créés avant cette version → accepté sans vérification.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    key_hash: Option<String>,
     entries: HashMap<String, VaultEntry>,
+}
+
+// ─── Résultat de la vérification de clé maître ───────────────────────────────
+
+/// Résultat retourné par [`Vault::master_key_ok`].
+pub enum MasterKeyCheck {
+    /// Le hash correspond → clé correcte.
+    Ok,
+    /// Le hash ne correspond pas → clé incorrecte.
+    Wrong,
+    /// Aucun hash stocké (vault vierge ou format ancien) → indéterminé, autorisé.
+    Unknown,
 }
 
 // ─── API publique ─────────────────────────────────────────────────────────────
@@ -62,6 +80,26 @@ impl Vault {
         }
     }
 
+    // ─── Vérification de la clé maître ───────────────────────────────────────
+
+    /// Vérifie si le mot de passe maître correspond au hash stocké.
+    /// - `Ok`      → hash présent et correspondant.
+    /// - `Wrong`   → hash présent mais différent → mot de passe incorrect.
+    /// - `Unknown` → aucun hash stocké (vault vierge/ancien) → autorisé.
+    pub fn master_key_ok(&self) -> Result<MasterKeyCheck> {
+        let data = self.load_data()?;
+        match &data.key_hash {
+            None    => Ok(MasterKeyCheck::Unknown),
+            Some(h) => {
+                if *h == sha256_hex(&self.master_key) {
+                    Ok(MasterKeyCheck::Ok)
+                } else {
+                    Ok(MasterKeyCheck::Wrong)
+                }
+            }
+        }
+    }
+
     // ─── Mot de passe ─────────────────────────────────────────────────────────
 
     /// Chiffre et stocke le mot de passe pour un profil.
@@ -69,7 +107,7 @@ impl Vault {
         let mut data = self.load_data()?;
         data.entries.entry(profile_id.to_string()).or_default().password =
             Some(self.encrypt(password)?);
-        self.save_data(&data)
+        self.save_data(&mut data)
     }
 
     /// Retourne le mot de passe déchiffré d'un profil, ou None s'il n'existe pas.
@@ -85,7 +123,7 @@ impl Vault {
         let mut data = self.load_data()?;
         data.entries.entry(profile_id.to_string()).or_default().address =
             Some(self.encrypt(address)?);
-        self.save_data(&data)
+        self.save_data(&mut data)
     }
 
     /// Retourne l'adresse IP/hostname déchiffrée d'un profil, ou None si absente.
@@ -101,7 +139,7 @@ impl Vault {
         let mut data = self.load_data()?;
         data.entries.entry(profile_id.to_string()).or_default().username =
             Some(self.encrypt(username)?);
-        self.save_data(&data)
+        self.save_data(&mut data)
     }
 
     /// Retourne le nom d'utilisateur déchiffré d'un profil, ou None si absent.
@@ -119,7 +157,7 @@ impl Vault {
             entry.password = None;
             if entry.is_empty() { data.entries.remove(profile_id); }
         }
-        self.save_data(&data)
+        self.save_data(&mut data)
     }
 
     /// Retourne true si le profil a des entrées chiffrées dans vault.toml
@@ -136,7 +174,7 @@ impl Vault {
     pub fn remove_profile(&self, profile_id: &str) -> Result<()> {
         let mut data = self.load_data()?;
         data.entries.remove(profile_id);
-        self.save_data(&data)
+        self.save_data(&mut data)
     }
 
     // ─── Chiffrement interne ──────────────────────────────────────────────────
@@ -196,13 +234,25 @@ impl Vault {
         Ok(toml::from_str(&text).unwrap_or_default())
     }
 
-    fn save_data(&self, data: &VaultData) -> Result<()> {
+    fn save_data(&self, data: &mut VaultData) -> Result<()> {
+        // Stocke le hash de la clé maître à la première écriture.
+        if data.key_hash.is_none() {
+            data.key_hash = Some(sha256_hex(&self.master_key));
+        }
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(&self.path, toml::to_string_pretty(data)?)?;
         Ok(())
     }
+}
+
+// ─── Helper interne ───────────────────────────────────────────────────────────
+
+fn sha256_hex(s: &str) -> String {
+    let mut h = Sha256::new();
+    h.update(s.as_bytes());
+    format!("{:x}", h.finalize())
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────

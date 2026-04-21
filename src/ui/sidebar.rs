@@ -1,7 +1,7 @@
 /// Barre latérale gauche : liste des profils de connexion avec recherche,
 /// tri et bouton de création. Double-clic sur un profil → ouvre un onglet SSH.
 use crate::app::BetterSshApp;
-use crate::config::{AuthMethod, ConnectionProfile, Vault};
+use crate::config::{AuthMethod, ConnectionProfile, MasterKeyCheck, Vault};
 use crate::ui::icons as ph;
 use egui::Ui;
 
@@ -22,6 +22,8 @@ pub struct SidebarState {
     pub vault_key_input: String,
     /// true si pending_password a été pré-chargé automatiquement depuis le vault.
     pub vault_password_loaded: bool,
+    /// Message d'erreur de déverrouillage vault (mauvais mot de passe, etc.).
+    pub vault_error: Option<String>,
 }
 
 impl SidebarState {
@@ -34,6 +36,7 @@ impl SidebarState {
             pending_password: String::new(),
             vault_key_input: String::new(),
             vault_password_loaded: false,
+            vault_error: None,
         }
     }
 }
@@ -289,34 +292,52 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     ui.label("Clé vault :");
-                    ui.add(
+                    if ui.add(
                         egui::TextEdit::singleline(&mut vault_key_input)
                             .password(true)
                             .hint_text("Clé maître du vault")
                             .desired_width(200.0),
-                    );
+                    ).changed() {
+                        app.sidebar.vault_error = None;
+                    }
                     let can_unlock = !vault_key_input.is_empty();
                     if ui.add_enabled(can_unlock, egui::Button::new(format!("{} Déverrouiller", ph::LOCK_OPEN))).clicked() {
                         let vault = Vault::new(vault_key_input.clone());
-                        if profile.host.is_empty() {
-                            profile.host = vault.get_address(&profile.id)
-                                .ok().flatten().unwrap_or_default();
-                        }
-                        if profile.username.is_empty() {
-                            profile.username = vault.get_username(&profile.id)
-                                .ok().flatten().unwrap_or_default();
-                        }
-                        if profile.auth_method == AuthMethod::Password {
-                            if let Ok(Some(pw)) = vault.get_password(&profile.id) {
-                                pending_password = pw;
-                                app.sidebar.vault_password_loaded = true;
+                        match vault.master_key_ok() {
+                            Ok(MasterKeyCheck::Wrong) => {
+                                app.sidebar.vault_error = Some("Mot de passe incorrect.".into());
+                            }
+                            _ => {
+                                app.sidebar.vault_error = None;
+                                if profile.host.is_empty() {
+                                    profile.host = vault.get_address(&profile.id)
+                                        .ok().flatten().unwrap_or_default();
+                                }
+                                if profile.username.is_empty() {
+                                    profile.username = vault.get_username(&profile.id)
+                                        .ok().flatten().unwrap_or_default();
+                                }
+                                if profile.auth_method == AuthMethod::Password {
+                                    if let Ok(Some(pw)) = vault.get_password(&profile.id) {
+                                        pending_password = pw;
+                                        app.sidebar.vault_password_loaded = true;
+                                    }
+                                }
+                                app.vault = Some(vault);
+                                app.hydrate_profiles_from_vault();
+                                vault_key_input.clear();
                             }
                         }
-                        app.vault = Some(vault);
-                        app.hydrate_profiles_from_vault();
-                        vault_key_input.clear();
                     }
                 });
+                // Affiche l'erreur de mot de passe incorrect si présente.
+                if let Some(err) = &app.sidebar.vault_error.clone() {
+                    ui.label(
+                        egui::RichText::new(format!("{} {err}", ph::WARNING))
+                            .color(egui::Color32::from_rgb(220, 70, 70))
+                            .small(),
+                    );
+                }
                 ui.add_space(8.0);
                 ui.separator();
                 ui.add_space(6.0);
@@ -440,32 +461,49 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                                         .weak(),
                                 );
                                 ui.horizontal(|ui| {
-                                    ui.add(
+                                    if ui.add(
                                         egui::TextEdit::singleline(&mut vault_key_input)
                                             .password(true)
                                             .hint_text("Clé maître du vault")
                                             .desired_width(160.0),
-                                    );
+                                    ).changed() {
+                                        app.sidebar.vault_error = None;
+                                    }
                                     let can_unlock = !vault_key_input.is_empty();
                                     if ui.add_enabled(can_unlock, egui::Button::new(format!("{} Déverrouiller", ph::LOCK_OPEN))).clicked() {
                                         let vault = Vault::new(vault_key_input.clone());
-                                        if profile.host.is_empty() {
-                                            profile.host = vault.get_address(&profile.id)
-                                                .ok().flatten().unwrap_or_default();
-                                        }
-                                        if profile.username.is_empty() {
-                                            profile.username = vault.get_username(&profile.id)
-                                                .ok().flatten().unwrap_or_default();
-                                        }
-                                        if profile.auth_method == AuthMethod::Password {
-                                            if let Ok(Some(pw)) = vault.get_password(&profile.id) {
-                                                pending_password = pw;
-                                                app.sidebar.vault_password_loaded = true;
+                                        match vault.master_key_ok() {
+                                            Ok(MasterKeyCheck::Wrong) => {
+                                                app.sidebar.vault_error = Some("Mot de passe incorrect.".into());
+                                            }
+                                            _ => {
+                                                app.sidebar.vault_error = None;
+                                                if profile.host.is_empty() {
+                                                    profile.host = vault.get_address(&profile.id)
+                                                        .ok().flatten().unwrap_or_default();
+                                                }
+                                                if profile.username.is_empty() {
+                                                    profile.username = vault.get_username(&profile.id)
+                                                        .ok().flatten().unwrap_or_default();
+                                                }
+                                                if profile.auth_method == AuthMethod::Password {
+                                                    if let Ok(Some(pw)) = vault.get_password(&profile.id) {
+                                                        pending_password = pw;
+                                                        app.sidebar.vault_password_loaded = true;
+                                                    }
+                                                }
+                                                app.vault = Some(vault);
+                                                app.hydrate_profiles_from_vault();
+                                                vault_key_input.clear();
                                             }
                                         }
-                                        app.vault = Some(vault);
-                                        app.hydrate_profiles_from_vault();
-                                        vault_key_input.clear();
+                                    }
+                                    if let Some(err) = &app.sidebar.vault_error.clone() {
+                                        ui.label(
+                                            egui::RichText::new(format!("{} {err}", ph::WARNING))
+                                                .color(egui::Color32::from_rgb(220, 70, 70))
+                                                .small(),
+                                        );
                                     }
                                 });
                             }

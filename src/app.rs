@@ -37,6 +37,8 @@ pub struct ScanConnectDialog {
     pub is_new: bool,
     /// ID du profil existant (pour mise à jour et accès au vault).
     pub existing_profile_id: Option<String>,
+    /// Message d'erreur de déverrouillage vault (mauvais mot de passe).
+    pub vault_error: Option<String>,
 }
 
 // ─── Onglet de session ────────────────────────────────────────────────────────
