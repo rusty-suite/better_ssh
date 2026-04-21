@@ -713,6 +713,7 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
                     // Affiche les lignes complètes du scrollback.
                     for line in &state.lines {
                         ui.horizontal_wrapped(|ui| {
+                            ui.style_mut().spacing.item_spacing.x = 0.0;
                             for span in &line.spans {
                                 let mut rt = egui::RichText::new(&span.text)
                                     .font(font_id.clone())
@@ -729,6 +730,7 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
 
                     // Affiche la ligne en cours (SSH) + local echo (saisie utilisateur).
                     ui.horizontal_wrapped(|ui| {
+                        ui.style_mut().spacing.item_spacing.x = 0.0;
                         for span in &state.current_line {
                             let mut rt = egui::RichText::new(&span.text)
                                 .font(font_id.clone())
