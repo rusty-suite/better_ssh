@@ -418,8 +418,12 @@ fn render_toolbar(state: &mut FileExplorerState, ui: &mut Ui, req: &mut Option<S
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let vl = if state.view_mode == ViewMode::Grid { ph::LIST } else { ph::GRID_FOUR };
-            if ui.small_button(vl).clicked() {
+            let (vl, vl_tip) = if state.view_mode == ViewMode::Grid {
+                (ph::LIST,      "Passer en vue liste")
+            } else {
+                (ph::GRID_FOUR, "Passer en vue grille")
+            };
+            if ui.small_button(vl).on_hover_text(vl_tip).clicked() {
                 state.view_mode = if state.view_mode == ViewMode::Grid { ViewMode::List } else { ViewMode::Grid };
             }
             if ui.small_button(ph::ARROWS_CLOCKWISE).on_hover_text("Rafraîchir").clicked() {
@@ -600,6 +604,14 @@ fn render_list(
 
 // ─── Vue grille ───────────────────────────────────────────────────────────────
 
+/// Largeur d'une tuile incluant la marge interne du Frame (6px×2) et l'espacement inter-tuile.
+const TILE_INNER_W: f32 = 90.0;
+const TILE_INNER_H: f32 = 84.0;
+const TILE_MARGIN:  f32 = 6.0;
+const TILE_SPACING: f32 = 6.0;
+/// Largeur totale occupée par une tuile dans la grille.
+const TILE_TOTAL_W: f32 = TILE_INNER_W + TILE_MARGIN * 2.0 + TILE_SPACING;
+
 fn render_grid(
     state: &mut FileExplorerState,
     ui: &mut Ui,
@@ -608,70 +620,98 @@ fn render_grid(
     current_uid: Option<u32>,
     req: &mut Option<SftpRequest>,
 ) {
+    // Calcule le nombre de colonnes depuis la largeur disponible *avant* le scroll.
+    // On le capte ici pour qu'il soit stable même après ouverture de la barre de défilement.
+    let available_w = ui.available_width();
+    let cols = ((available_w / TILE_TOTAL_W) as usize).max(1);
+
     ScrollArea::vertical().id_salt("fe_grid").show(ui, |ui| {
         let bg_rect = ui.available_rect_before_wrap();
         let bg = ui.interact(bg_rect, ui.id().with("grid_bg"), egui::Sense::click_and_drag());
         handle_bg(state, &bg, visible, req);
 
-        ui.horizontal_wrapped(|ui| {
-            for entry in visible {
-                let color  = access_color(entry, username, current_uid);
-                let is_sel = state.selected.contains(&entry.path);
-                let icon   = if entry.is_dir { "📁" } else { "📄" };
-                let perm_s = entry.permissions.map(fmt_perms).unwrap_or_else(|| "?????????".into());
+        egui::Grid::new("fe_grid_content")
+            .num_columns(cols)
+            .spacing([TILE_SPACING, TILE_SPACING])
+            .show(ui, |ui| {
+                for (idx, entry) in visible.iter().enumerate() {
+                    let color  = access_color(entry, username, current_uid);
+                    let is_sel = state.selected.contains(&entry.path);
+                    let icon   = if entry.is_dir { ph::FOLDER } else { ph::FILE_TEXT };
+                    let perm_s = entry.permissions.map(fmt_perms).unwrap_or_else(|| "?????????".into());
 
-                let bg_fill = if is_sel {
-                    ui.visuals().selection.bg_fill.linear_multiply(0.6)
-                } else {
-                    Color32::TRANSPARENT
-                };
-                let stroke_c = if is_sel {
-                    ui.visuals().selection.bg_fill
-                } else {
-                    Color32::from_rgba_unmultiplied(255, 255, 255, 12)
-                };
+                    let bg_fill = if is_sel {
+                        ui.visuals().selection.bg_fill.linear_multiply(0.6)
+                    } else {
+                        Color32::TRANSPARENT
+                    };
+                    let stroke_c = if is_sel {
+                        ui.visuals().selection.bg_fill
+                    } else {
+                        Color32::from_rgba_unmultiplied(255, 255, 255, 12)
+                    };
 
-                let tile = egui::Frame::none()
-                    .fill(bg_fill)
-                    .stroke(Stroke::new(1.0, stroke_c))
-                    .inner_margin(egui::Margin::same(6.0))
-                    .rounding(5.0)
-                    .show(ui, |ui| {
-                        ui.allocate_ui(Vec2::new(88.0, 80.0), |ui| {
-                            ui.vertical_centered(|ui| {
-                                ui.label(egui::RichText::new("●").color(color));
-                                ui.label(egui::RichText::new(icon).size(26.0));
-                                if state.rename_path.as_deref() == Some(entry.path.as_str()) {
-                                    if let Some(new_name) = render_rename(state, ui, &entry.path) {
-                                        let to = format!("{}/{new_name}", state.current_path.trim_end_matches('/'));
-                                        state.add_toast(format!("Renommé en «{new_name}»"));
-                                        *req = Some(SftpRequest::Rename { from: entry.path.clone(), to });
-                                    }
-                                } else {
-                                    let short = if entry.name.len() > 12 {
-                                        format!("{}…", &entry.name[..11])
+                    let tile = egui::Frame::none()
+                        .fill(bg_fill)
+                        .stroke(Stroke::new(1.0, stroke_c))
+                        .inner_margin(egui::Margin::same(TILE_MARGIN))
+                        .rounding(5.0)
+                        .show(ui, |ui| {
+                            ui.allocate_ui(Vec2::new(TILE_INNER_W, TILE_INNER_H), |ui| {
+                                ui.vertical_centered(|ui| {
+                                    ui.label(egui::RichText::new("●").color(color).small());
+                                    ui.label(egui::RichText::new(icon).size(28.0));
+                                    if state.rename_path.as_deref() == Some(entry.path.as_str()) {
+                                        if let Some(new_name) = render_rename(state, ui, &entry.path) {
+                                            let to = format!("{}/{new_name}", state.current_path.trim_end_matches('/'));
+                                            state.add_toast(format!("Renommé en «{new_name}»"));
+                                            *req = Some(SftpRequest::Rename { from: entry.path.clone(), to });
+                                        }
                                     } else {
-                                        entry.name.clone()
-                                    };
-                                    ui.label(egui::RichText::new(short).small());
-                                }
+                                        // Tronque les noms longs avec une ellipse.
+                                        let short = truncate_name(&entry.name, 14);
+                                        ui.label(egui::RichText::new(short).small());
+                                    }
+                                });
                             });
                         });
-                    });
 
-                let resp = tile.response.interact(egui::Sense::click_and_drag());
-                state.item_rects.push((entry.path.clone(), resp.rect));
+                    let resp = tile.response.interact(egui::Sense::click_and_drag());
+                    state.item_rects.push((entry.path.clone(), resp.rect));
 
-                let tip = format!(
-                    "Chemin : {}\nPerms : {}\nAccès ({username}) : {}",
-                    entry.path, perm_s, access_label(entry, username, current_uid)
-                );
-                handle_item(state, &entry.path, entry.is_dir, &resp, req);
-                let resp = resp.on_hover_text(tip);
-                resp.context_menu(|ui| ctx_menu(state, ui, Some(&entry.path), entry.is_dir, req));
-            }
-        });
+                    let tip = format!(
+                        "{}\nPerms : {}\nAccès ({username}) : {}\nTaille : {}\nModifié : {}",
+                        entry.path,
+                        perm_s,
+                        access_label(entry, username, current_uid),
+                        if entry.is_dir { "—".into() } else { fmt_size(entry.size) },
+                        entry.modified.map(fmt_date).unwrap_or_else(|| "—".into()),
+                    );
+                    handle_item(state, &entry.path, entry.is_dir, &resp, req);
+                    let resp = resp.on_hover_text(tip);
+                    resp.context_menu(|ui| ctx_menu(state, ui, Some(&entry.path), entry.is_dir, req));
+
+                    // Fin de ligne après chaque `cols` tuiles.
+                    if (idx + 1) % cols == 0 {
+                        ui.end_row();
+                    }
+                }
+                // Termine la dernière ligne incomplète si nécessaire.
+                if !visible.is_empty() && visible.len() % cols != 0 {
+                    ui.end_row();
+                }
+            });
     });
+}
+
+/// Tronque un nom de fichier à `max_chars` caractères en ajoutant "…".
+fn truncate_name(name: &str, max_chars: usize) -> String {
+    let chars: Vec<char> = name.chars().collect();
+    if chars.len() <= max_chars {
+        name.to_string()
+    } else {
+        format!("{}…", chars[..max_chars - 1].iter().collect::<String>())
+    }
 }
 
 // ─── Renommage inline ─────────────────────────────────────────────────────────
