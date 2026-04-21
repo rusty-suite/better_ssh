@@ -71,10 +71,15 @@ pub struct TerminalState {
 
     /// Historique de session (max 50 commandes). Index 0 = la plus récente.
     pub session_history: VecDeque<String>,
-    /// true = liste déroulante de l'historique visible.
+    /// true = liste déroulante de l'historique visible (recherche textuelle).
     pub show_history_dropdown: bool,
-    /// Index sélectionné dans la liste filtrée (0 = commande la plus récente).
+    /// Index sélectionné dans la liste filtrée du dropdown.
     pub history_dropdown_idx: Option<usize>,
+    /// Index de navigation dans l'historique via flèches Haut/Bas.
+    /// None = saisie courante, Some(0) = commande la plus récente, Some(n) = n-ième.
+    pub history_nav_idx: Option<usize>,
+    /// Texte saisi avant d'entrer en navigation historique (restauré avec flèche Bas).
+    pub history_nav_saved: String,
     /// true si le champ de saisie invisible avait le focus à la frame précédente.
     /// Permet de ne consommer les touches que quand le terminal est actif.
     pub input_focused: bool,
@@ -111,6 +116,8 @@ impl TerminalState {
             session_history: VecDeque::new(),
             show_history_dropdown: false,
             history_dropdown_idx: None,
+            history_nav_idx: None,
+            history_nav_saved: String::new(),
             input_focused: false,
             server_managed: false,
             server_mode_echo: String::new(),
@@ -608,44 +615,54 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
                 to_send = Some(vec![0x0c]);
             }
 
+            // Flèche Haut : remplace l'input par la commande précédente (plus ancienne).
             if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowUp)) {
-                if !state.show_history_dropdown {
-                    let hist = build_filtered_history(&state.session_history, &state.input);
-                    if !hist.is_empty() {
-                        state.show_history_dropdown = true;
-                        state.history_dropdown_idx = Some(0);
-                    }
-                } else {
-                    let hist = build_filtered_history(&state.session_history, &state.input);
-                    if let Some(idx) = state.history_dropdown_idx {
-                        if idx + 1 < hist.len() {
-                            state.history_dropdown_idx = Some(idx + 1);
+                let hist_len = state.session_history.len();
+                if hist_len > 0 {
+                    let next = match state.history_nav_idx {
+                        None => {
+                            // Première navigation : sauvegarder la saisie courante.
+                            state.history_nav_saved = state.input.clone();
+                            0
                         }
-                    }
+                        Some(n) => (n + 1).min(hist_len - 1),
+                    };
+                    state.history_nav_idx = Some(next);
+                    state.input = state.session_history[next].clone();
                 }
+                state.show_history_dropdown = false;
             }
 
+            // Flèche Bas : avance vers le présent, ou restaure la saisie d'origine.
             if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowDown)) {
-                if state.show_history_dropdown {
-                    match state.history_dropdown_idx {
-                        Some(0) | None => {
-                            state.show_history_dropdown = false;
-                            state.history_dropdown_idx = None;
-                        }
-                        Some(n) => { state.history_dropdown_idx = Some(n - 1); }
+                match state.history_nav_idx {
+                    None => {} // déjà à la saisie courante
+                    Some(0) => {
+                        state.history_nav_idx = None;
+                        state.input = std::mem::take(&mut state.history_nav_saved);
+                    }
+                    Some(n) => {
+                        let prev = n - 1;
+                        state.history_nav_idx = Some(prev);
+                        state.input = state.session_history[prev].clone();
                     }
                 }
+                state.show_history_dropdown = false;
             }
 
+            // Échap : ferme le dropdown de recherche, ou efface la saisie et quitte la navigation.
             if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
                 if state.show_history_dropdown {
                     state.show_history_dropdown = false;
                     state.history_dropdown_idx = None;
                 } else {
                     state.input.clear();
+                    state.history_nav_idx = None;
+                    state.history_nav_saved.clear();
                 }
             }
 
+            // Entrée avec dropdown de recherche ouvert : sélectionne sans envoyer.
             if state.show_history_dropdown
                 && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter))
             {
@@ -657,6 +674,8 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
                 }
                 state.show_history_dropdown = false;
                 state.history_dropdown_idx = None;
+                state.history_nav_idx = None;
+                state.history_nav_saved.clear();
             }
 
             // Tab via tab_pressed (déjà retiré de la queue ci-dessus).
@@ -860,6 +879,7 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
             }
 
             // ── Champ de saisie invisible (capture clavier uniquement) ────────
+            let input_before = state.input.clone();
             let response = ui.add_sized(
                 [0.0, 0.0],
                 egui::TextEdit::singleline(&mut state.input)
@@ -889,6 +909,13 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
             // a momentanément déplacé le focus, pour que terminal_active reste vrai.
             state.input_focused = response.has_focus() || state.server_managed;
 
+            // Si l'utilisateur a tapé un caractère pendant la navigation historique,
+            // on quitte la navigation (son texte modifié devient la saisie courante).
+            if state.history_nav_idx.is_some() && state.input != input_before {
+                state.history_nav_idx = None;
+                state.history_nav_saved.clear();
+            }
+
             // Entrée validée → envoie la ligne au serveur (avec \n) et vide le champ.
             // (Cas dropdown déjà traité avant le Frame par consume_key.)
             if response.has_focus()
@@ -901,6 +928,8 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
                 send_cmd.push('\n');
                 to_send = Some(send_cmd.into_bytes());
                 state.input.clear();
+                state.history_nav_idx = None;
+                state.history_nav_saved.clear();
             }
         });
 
