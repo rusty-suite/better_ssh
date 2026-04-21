@@ -89,11 +89,16 @@ impl Vault {
     pub fn master_key_ok(&self) -> Result<MasterKeyCheck> {
         let data = self.load_data()?;
         match &data.key_hash {
-            None    => Ok(MasterKeyCheck::Unknown),
+            None    => {
+                log::info!("Vault : aucun hash stocké — accès autorisé sans vérification");
+                Ok(MasterKeyCheck::Unknown)
+            }
             Some(h) => {
                 if *h == sha256_hex(&self.master_key) {
+                    log::info!("Vault : clé maître vérifiée avec succès");
                     Ok(MasterKeyCheck::Ok)
                 } else {
+                    log::warn!("Vault : tentative de déverrouillage avec un mot de passe incorrect");
                     Ok(MasterKeyCheck::Wrong)
                 }
             }

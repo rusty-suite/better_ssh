@@ -177,17 +177,27 @@ async fn run_session(
 
     let handler = ClientHandler { event_tx: event_tx.clone() };
     let addr = format!("{}:{}", profile.host, profile.port);
+    log::info!("Connexion SSH → {} (utilisateur : {})", addr, profile.username);
 
     // Connexion TCP avec timeout global.
     let mut session = timeout(
         Duration::from_secs(profile.connection_timeout_secs),
-        client::connect(config, addr, handler),
+        client::connect(config, addr.clone(), handler),
     )
     .await
     .context("timeout de connexion")?
     .context("connexion TCP échouée")?;
 
+    log::info!("TCP établi → {}", addr);
+
     // Authentification selon la méthode choisie dans le profil.
+    let auth_method_name = match &profile.auth_method {
+        AuthMethod::Password => "password",
+        AuthMethod::PublicKey { .. } => "publickey",
+        AuthMethod::Agent => "agent",
+    };
+    log::info!("Authentification SSH : méthode={} utilisateur={}", auth_method_name, profile.username);
+
     let authenticated = match &profile.auth_method {
         AuthMethod::Password => {
             let pw = password.unwrap_or_default();
@@ -212,8 +222,10 @@ async fn run_session(
     };
 
     if !authenticated {
+        log::warn!("Authentification refusée : utilisateur={} hôte={}", profile.username, addr);
         anyhow::bail!("Authentification refusée pour l'utilisateur '{}'", profile.username);
     }
+    log::info!("Authentifié avec succès → {}", addr);
 
     // Ouvre un canal de session avec un pseudo-terminal (PTY) pour le shell interactif.
     let mut channel = session
@@ -348,11 +360,14 @@ async fn run_sftp_handler(
     while let Some(cmd) = sftp_rx.recv().await {
         match cmd {
             SftpCommand::ListDir(path) => {
+                log::debug!("SFTP list : {}", path);
                 match client.list_dir(&path).await {
                     Ok(entries) => {
+                        log::debug!("SFTP list OK : {} entrées dans {}", entries.len(), path);
                         let _ = event_tx.send(SessionEvent::SftpListing { path, entries });
                     }
                     Err(e) => {
+                        log::warn!("SFTP list échoué : {} — {}", path, e);
                         let _ = event_tx.send(SessionEvent::SftpOpResult {
                             op: format!("list {path}"),
                             ok: false,
@@ -362,7 +377,9 @@ async fn run_sftp_handler(
                 }
             }
             SftpCommand::Rename { from, to } => {
+                log::debug!("SFTP rename : {} → {}", from, to);
                 let result = client.rename(&from, &to).await;
+                if let Err(ref e) = result { log::warn!("SFTP rename échoué : {}", e); }
                 let _ = event_tx.send(SessionEvent::SftpOpResult {
                     op: "rename".into(),
                     ok: result.is_ok(),
@@ -370,7 +387,9 @@ async fn run_sftp_handler(
                 });
             }
             SftpCommand::Delete(path) => {
+                log::debug!("SFTP delete : {}", path);
                 let result = client.remove_file(&path).await;
+                if let Err(ref e) = result { log::warn!("SFTP delete échoué : {}", e); }
                 let _ = event_tx.send(SessionEvent::SftpOpResult {
                     op: "delete".into(),
                     ok: result.is_ok(),
@@ -378,7 +397,9 @@ async fn run_sftp_handler(
                 });
             }
             SftpCommand::DeleteDir(path) => {
+                log::debug!("SFTP rmdir : {}", path);
                 let result = client.remove_dir(&path).await;
+                if let Err(ref e) = result { log::warn!("SFTP rmdir échoué : {}", e); }
                 let _ = event_tx.send(SessionEvent::SftpOpResult {
                     op: "rmdir".into(),
                     ok: result.is_ok(),
@@ -386,7 +407,9 @@ async fn run_sftp_handler(
                 });
             }
             SftpCommand::Mkdir(path) => {
+                log::debug!("SFTP mkdir : {}", path);
                 let result = client.mkdir(&path).await;
+                if let Err(ref e) = result { log::warn!("SFTP mkdir échoué : {}", e); }
                 let _ = event_tx.send(SessionEvent::SftpOpResult {
                     op: "mkdir".into(),
                     ok: result.is_ok(),
@@ -394,7 +417,9 @@ async fn run_sftp_handler(
                 });
             }
             SftpCommand::CreateFile(path) => {
+                log::debug!("SFTP create : {}", path);
                 let result = client.create_empty_file(&path).await;
+                if let Err(ref e) = result { log::warn!("SFTP create échoué : {}", e); }
                 let _ = event_tx.send(SessionEvent::SftpOpResult {
                     op: "create".into(),
                     ok: result.is_ok(),
@@ -402,11 +427,13 @@ async fn run_sftp_handler(
                 });
             }
             SftpCommand::MovePaths { paths, dest } => {
+                log::debug!("SFTP move : {} élément(s) → {}", paths.len(), dest);
                 let mut errors = Vec::new();
                 for path in &paths {
                     let filename = path.rsplit('/').next().unwrap_or(path.as_str());
                     let target = format!("{}/{}", dest.trim_end_matches('/'), filename);
                     if let Err(e) = client.rename(path, &target).await {
+                        log::warn!("SFTP move échoué : {} → {} : {}", path, target, e);
                         errors.push(e.to_string());
                     }
                 }
@@ -418,7 +445,9 @@ async fn run_sftp_handler(
                 });
             }
             SftpCommand::Download { remote, local } => {
+                log::debug!("SFTP download : {} → {}", remote, local.display());
                 let result = client.download_file(&remote, &local).await;
+                if let Err(ref e) = result { log::warn!("SFTP download échoué : {}", e); }
                 let _ = event_tx.send(SessionEvent::SftpOpResult {
                     op: "download".into(),
                     ok: result.is_ok(),
