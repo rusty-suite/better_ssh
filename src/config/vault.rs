@@ -14,22 +14,17 @@ use super::AppConfig;
 // ─── Structure de données persistée ──────────────────────────────────────────
 
 /// Secrets chiffrés associés à un profil.
-/// Format vault.toml par entrée :
-///   [entries.<profile-id>]
-///   address  = "<base64(age(ip_ou_hostname))>"
-///   username = "<base64(age(login))>"
-///   password = "<base64(age(mot_de_passe))>"
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct VaultEntry {
-    /// Adresse IP ou nom d'hôte chiffré (clé TOML : `address`).
     #[serde(skip_serializing_if = "Option::is_none")]
     address: Option<String>,
-    /// Nom d'utilisateur SSH chiffré (clé TOML : `username`).
     #[serde(skip_serializing_if = "Option::is_none")]
     username: Option<String>,
-    /// Mot de passe SSH chiffré (clé TOML : `password`).
     #[serde(skip_serializing_if = "Option::is_none")]
     password: Option<String>,
+    /// Historique de commandes : JSON de Vec<String> chiffré (20 max, plus récent en tête).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    history: Option<String>,
 }
 
 impl VaultEntry {
@@ -64,6 +59,7 @@ pub enum MasterKeyCheck {
 
 /// Gère le chiffrement/déchiffrement des secrets SSH avec une clé maître.
 /// La clé maître elle-même n'est pas stockée sur disque.
+#[derive(Clone)]
 pub struct Vault {
     /// Chemin vers vault.toml (modifiable dans les tests).
     path: std::path::PathBuf,
@@ -179,6 +175,34 @@ impl Vault {
     pub fn remove_profile(&self, profile_id: &str) -> Result<()> {
         let mut data = self.load_data()?;
         data.entries.remove(profile_id);
+        self.save_data(&mut data)
+    }
+
+    // ─── Historique de commandes chiffré ─────────────────────────────────────
+
+    /// Retourne les 20 dernières commandes du profil (plus récente en tête).
+    /// Retourne un Vec vide si aucun historique n'est stocké.
+    pub fn get_history(&self, profile_id: &str) -> Result<Vec<String>> {
+        let data = self.load_data()?;
+        let enc = data.entries
+            .get(profile_id)
+            .and_then(|e| e.history.as_deref());
+        match enc {
+            None => Ok(Vec::new()),
+            Some(enc) => {
+                let json = self.decrypt(enc)?;
+                Ok(serde_json::from_str(&json).unwrap_or_default())
+            }
+        }
+    }
+
+    /// Chiffre et persiste l'historique de commandes (max 20, plus récent en tête).
+    pub fn store_history(&self, profile_id: &str, commands: &[String]) -> Result<()> {
+        let trimmed: Vec<&String> = commands.iter().take(20).collect();
+        let json = serde_json::to_string(&trimmed)?;
+        let encrypted = self.encrypt(&json)?;
+        let mut data = self.load_data()?;
+        data.entries.entry(profile_id.to_string()).or_default().history = Some(encrypted);
         self.save_data(&mut data)
     }
 

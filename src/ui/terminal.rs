@@ -90,6 +90,9 @@ pub struct TerminalState {
     /// serveur répond (via feed). Permet un retour visuel immédiat sans attendre
     /// l'aller-retour réseau.
     pub server_mode_echo: String,
+    /// Levé à true quand une commande est ajoutée à session_history.
+    /// L'app lit ce flag pour sauvegarder l'historique dans le vault chiffré.
+    pub pending_history_save: bool,
 
     // ── État interne du parseur ANSI ────────────────────────────────────────
     /// Octets reçus mais pas encore parsés (séquences incomplètes).
@@ -121,6 +124,7 @@ impl TerminalState {
             input_focused: false,
             server_managed: false,
             server_mode_echo: String::new(),
+            pending_history_save: false,
             ansi_buf: Vec::new(),
             current_fg: Color32::from_rgb(204, 204, 204),
             current_bg: None,
@@ -393,14 +397,16 @@ fn build_filtered_history(history: &VecDeque<String>, filter: &str) -> Vec<Strin
 }
 
 /// Pousse une commande dans l'historique de session (déduplique les consécutifs).
-fn push_session_history(history: &mut VecDeque<String>, cmd: &str) {
+/// Retourne true si la commande a été effectivement ajoutée.
+fn push_session_history(history: &mut VecDeque<String>, cmd: &str) -> bool {
     let trimmed = cmd.trim();
-    if trimmed.is_empty() { return; }
-    if history.front().map(String::as_str) == Some(trimmed) { return; }
+    if trimmed.is_empty() { return false; }
+    if history.front().map(String::as_str) == Some(trimmed) { return false; }
     history.push_front(trimmed.to_string());
     if history.len() > MAX_SESSION_HISTORY {
         history.pop_back();
     }
+    true
 }
 
 // ─── Helpers édition ─────────────────────────────────────────────────────────
@@ -441,6 +447,26 @@ fn delete_last_word(input: &mut String) {
     }
 
     *input = chars[..i].iter().collect();
+}
+
+/// Extrait la commande tapée depuis le contenu affiché de la ligne courante.
+/// La ligne inclut le prompt shell (`user@host:~$ cmd`) ; on cherche le dernier
+/// marqueur de prompt connu (`$ `, `# `, `% `, `> `) et on prend tout ce qui suit.
+fn extract_cmd_from_line(spans: &[TermSpan]) -> Option<String> {
+    let text: String = spans.iter().map(|s| s.text.as_str()).collect();
+    let text = text.trim_end(); // retire l'espace trailing éventuel ajouté par readline
+    // Cherche la position la plus à droite parmi les marqueurs de prompt courants.
+    let markers = ["$ ", "# ", "% ", "> "];
+    let best = markers.iter().filter_map(|m| {
+        text.rfind(m).map(|pos| pos + m.len())
+    }).max();
+    if let Some(start) = best {
+        let cmd = text[start..].trim().to_string();
+        if !cmd.is_empty() { return Some(cmd); }
+    }
+    // Aucun marqueur : retourne la ligne entière trimée (prompt inconnu).
+    let fallback = text.trim().to_string();
+    if !fallback.is_empty() { Some(fallback) } else { None }
 }
 
 // ─── Rendu egui ──────────────────────────────────────────────────────────────
@@ -508,6 +534,13 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
             // ── Touches de navigation readline ────────────────────────────────
             if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)) {
                 raw.push(b'\n');
+                // Extraire la commande depuis current_line AVANT que le serveur
+                // n'envoie \r\n (qui effacera current_line). C'est le seul moment
+                // où la ligne complète (prompt + commande complétée) est visible.
+                if let Some(cmd) = extract_cmd_from_line(&state.current_line) {
+                    push_session_history(&mut state.session_history, &cmd);
+                    state.pending_history_save = true;
+                }
                 state.server_managed = false;
                 state.server_mode_echo.clear();
                 state.input.clear();
@@ -923,7 +956,9 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
                 && !state.show_history_dropdown
             {
                 let cmd = state.input.clone();
-                push_session_history(&mut state.session_history, &cmd);
+                if push_session_history(&mut state.session_history, &cmd) {
+                    state.pending_history_save = true;
+                }
                 let mut send_cmd = cmd;
                 send_cmd.push('\n');
                 to_send = Some(send_cmd.into_bytes());

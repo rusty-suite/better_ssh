@@ -161,6 +161,18 @@ impl BetterSshApp {
             "/".into()
         };
 
+        // Charge l'historique de commandes depuis le vault chiffré si disponible.
+        if let Some(vault) = &self.vault {
+            if let Ok(history) = vault.get_history(&profile.id) {
+                // session_history : index 0 = plus récente.
+                // On insère du plus ancien vers le plus récent via push_front.
+                for cmd in history.into_iter().rev() {
+                    tab.terminal.session_history.push_front(cmd);
+                    if tab.terminal.session_history.len() >= 50 { break; }
+                }
+            }
+        }
+
         // Lance la session SSH en arrière-plan immédiatement.
         tab.session = Some(SshSession::connect(profile, password));
 
@@ -302,6 +314,24 @@ fn handle_keyboard_shortcuts(app: &mut BetterSshApp, ctx: &Context) {
 /// Vide les canaux d'événements de toutes les sessions SSH actives
 /// et met à jour le terminal / l'état de connexion de chaque onglet.
 fn poll_session_events(app: &mut BetterSshApp) {
+    // Sauvegarde asynchrone de l'historique quand une commande a été ajoutée.
+    // L'encryption age est lente (~1 s) → spawn_blocking pour ne pas bloquer l'UI.
+    for tab in &mut app.tabs {
+        if tab.terminal.pending_history_save {
+            tab.terminal.pending_history_save = false;
+            if let Some(vault) = app.vault.clone() {
+                let commands: Vec<String> = tab.terminal.session_history
+                    .iter().take(20).cloned().collect();
+                let profile_id = tab.profile.id.clone();
+                tokio::task::spawn_blocking(move || {
+                    if let Err(e) = vault.store_history(&profile_id, &commands) {
+                        log::warn!("Historique vault : échec sauvegarde : {e}");
+                    }
+                });
+            }
+        }
+    }
+
     for tab in &mut app.tabs {
         // Collecte les événements sans garder de référence sur `tab.session`
         // (évite le conflit borrow immuable / mutable sur `tab`).
