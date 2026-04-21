@@ -667,10 +667,18 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
                     .frame(false)
                     .text_color(Color32::TRANSPARENT),
             );
-            // Ne vole le focus que si aucun dialogue modal n'est ouvert.
-            // Sinon les champs texte des dialogues (IP, utilisateur…) seraient inutilisables.
-            if !modal_open && !response.has_focus() {
-                response.request_focus();
+            // Le terminal prend le focus seulement si :
+            //   1. Aucun dialogue modal n'est ouvert.
+            //   2. Aucun autre widget n'a le focus clavier (barre de recherche,
+            //      explorateur de fichiers, champs de formulaire, etc.).
+            // Cela garantit que chaque widget ne capture que ce qu'il doit.
+            if !modal_open {
+                let another_widget_has_focus = ui.ctx().memory(|m| {
+                    m.focused().is_some_and(|id| id != response.id)
+                });
+                if !another_widget_has_focus && !response.has_focus() {
+                    response.request_focus();
+                }
             }
             // Mémorise l'état de focus pour la frame suivante (utilisé par les handlers de touches).
             state.input_focused = response.has_focus();
