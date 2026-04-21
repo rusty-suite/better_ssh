@@ -11,24 +11,28 @@ use super::AppConfig;
 
 // ─── Structure de données persistée ──────────────────────────────────────────
 
-/// Secrets chiffrés associés à un profil (tous les champs sont base64(age)).
+/// Secrets chiffrés associés à un profil.
+/// Format vault.toml par entrée :
+///   [entries.<profile-id>]
+///   address  = "<base64(age(ip_ou_hostname))>"
+///   username = "<base64(age(login))>"
+///   password = "<base64(age(mot_de_passe))>"
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct VaultEntry {
-    /// Mot de passe SSH chiffré.
+    /// Adresse IP ou nom d'hôte chiffré (clé TOML : `address`).
     #[serde(skip_serializing_if = "Option::is_none")]
-    password: Option<String>,
-    /// Adresse IP ou nom d'hôte chiffré.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    host: Option<String>,
-    /// Nom d'utilisateur chiffré.
+    address: Option<String>,
+    /// Nom d'utilisateur SSH chiffré (clé TOML : `username`).
     #[serde(skip_serializing_if = "Option::is_none")]
     username: Option<String>,
+    /// Mot de passe SSH chiffré (clé TOML : `password`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    password: Option<String>,
 }
 
 impl VaultEntry {
-    /// Retourne true si l'entrée ne contient plus aucun secret (peut être supprimée).
     fn is_empty(&self) -> bool {
-        self.password.is_none() && self.host.is_none() && self.username.is_none()
+        self.address.is_none() && self.username.is_none() && self.password.is_none()
     }
 }
 
@@ -74,20 +78,20 @@ impl Vault {
         self.decrypt_field(data.entries.get(profile_id).and_then(|e| e.password.as_deref()))
     }
 
-    // ─── Hôte ─────────────────────────────────────────────────────────────────
+    // ─── Adresse ──────────────────────────────────────────────────────────────
 
-    /// Chiffre et stocke l'adresse hôte pour un profil.
-    pub fn store_host(&self, profile_id: &str, host: &str) -> Result<()> {
+    /// Chiffre et stocke l'adresse IP/hostname pour un profil.
+    pub fn store_address(&self, profile_id: &str, address: &str) -> Result<()> {
         let mut data = self.load_data()?;
-        data.entries.entry(profile_id.to_string()).or_default().host =
-            Some(self.encrypt(host)?);
+        data.entries.entry(profile_id.to_string()).or_default().address =
+            Some(self.encrypt(address)?);
         self.save_data(&data)
     }
 
-    /// Retourne l'adresse hôte déchiffrée d'un profil, ou None si absente.
-    pub fn get_host(&self, profile_id: &str) -> Result<Option<String>> {
+    /// Retourne l'adresse IP/hostname déchiffrée d'un profil, ou None si absente.
+    pub fn get_address(&self, profile_id: &str) -> Result<Option<String>> {
         let data = self.load_data()?;
-        self.decrypt_field(data.entries.get(profile_id).and_then(|e| e.host.as_deref()))
+        self.decrypt_field(data.entries.get(profile_id).and_then(|e| e.address.as_deref()))
     }
 
     // ─── Nom d'utilisateur ────────────────────────────────────────────────────
@@ -113,9 +117,7 @@ impl Vault {
         let mut data = self.load_data()?;
         if let Some(entry) = data.entries.get_mut(profile_id) {
             entry.password = None;
-            if entry.is_empty() {
-                data.entries.remove(profile_id);
-            }
+            if entry.is_empty() { data.entries.remove(profile_id); }
         }
         self.save_data(&data)
     }
@@ -229,9 +231,9 @@ mod tests {
     #[test]
     fn round_trip_host_username() {
         let (vault, _dir) = temp_vault();
-        vault.store_host("profil-1", "192.168.1.10").unwrap();
+        vault.store_address("profil-1", "192.168.1.10").unwrap();
         vault.store_username("profil-1", "alice").unwrap();
-        assert_eq!(vault.get_host("profil-1").unwrap(), Some("192.168.1.10".to_string()));
+        assert_eq!(vault.get_address("profil-1").unwrap(), Some("192.168.1.10".to_string()));
         assert_eq!(vault.get_username("profil-1").unwrap(), Some("alice".to_string()));
     }
 
@@ -239,17 +241,17 @@ mod tests {
     fn remove_profile_purge_toutes_les_entrees() {
         let (vault, _dir) = temp_vault();
         vault.store_password("profil-1", "pwd").unwrap();
-        vault.store_host("profil-1", "10.0.0.1").unwrap();
+        vault.store_address("profil-1", "10.0.0.1").unwrap();
         vault.remove_profile("profil-1").unwrap();
         assert!(vault.get_password("profil-1").unwrap().is_none());
-        assert!(vault.get_host("profil-1").unwrap().is_none());
+        assert!(vault.get_address("profil-1").unwrap().is_none());
     }
 
     #[test]
     fn profil_absent_retourne_none() {
         let (vault, _dir) = temp_vault();
         assert!(vault.get_password("inexistant").unwrap().is_none());
-        assert!(vault.get_host("inexistant").unwrap().is_none());
+        assert!(vault.get_address("inexistant").unwrap().is_none());
         assert!(vault.get_username("inexistant").unwrap().is_none());
     }
 }
