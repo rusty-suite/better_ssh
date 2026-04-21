@@ -77,6 +77,8 @@ pub struct FileExplorerState {
     pub loaded: bool,
     /// UID numérique de l'utilisateur connecté (reçu via SftpUid au démarrage SFTP).
     pub current_uid: Option<u32>,
+    /// Erreur de listage du répertoire courant (accès refusé, etc.). None si aucun problème.
+    pub dir_error: Option<String>,
 }
 
 impl FileExplorerState {
@@ -115,6 +117,7 @@ impl FileExplorerState {
             item_rects: Vec::new(),
             loaded: false,
             current_uid: None,
+            dir_error: None,
         }
     }
 
@@ -128,6 +131,7 @@ impl FileExplorerState {
         self.nav_forward.clear();
         self.current_path = path.clone();
         self.loading = true;
+        self.dir_error = None;
         self.selected.clear();
         self.last_active = None;
         SftpRequest::ListDir(path)
@@ -138,6 +142,7 @@ impl FileExplorerState {
         self.nav_forward.push(self.current_path.clone());
         self.current_path = prev.clone();
         self.loading = true;
+        self.dir_error = None;
         self.selected.clear();
         Some(SftpRequest::ListDir(prev))
     }
@@ -147,6 +152,7 @@ impl FileExplorerState {
         self.nav_back.push(self.current_path.clone());
         self.current_path = next.clone();
         self.loading = true;
+        self.dir_error = None;
         self.selected.clear();
         Some(SftpRequest::ListDir(next))
     }
@@ -462,6 +468,29 @@ fn render_content(
         });
         return;
     }
+
+    // Erreur de listage (accès refusé, répertoire inexistant, etc.)
+    if let Some(err) = &state.dir_error.clone() {
+        ui.centered_and_justified(|ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(24.0);
+                ui.label(egui::RichText::new(ph::LOCK).size(40.0).color(Color32::from_rgb(200, 80, 80)));
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new(err).color(Color32::from_rgb(220, 100, 100)).strong());
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(format!("Chemin : {}", state.current_path))
+                        .small().weak(),
+                );
+                ui.add_space(12.0);
+                if ui.button(format!("{} Dossier parent", ph::ARROW_UP)).clicked() {
+                    *req = state.navigate_up();
+                }
+            });
+        });
+        return;
+    }
+
     let filter = state.search_query.to_lowercase();
     let visible: Vec<RemoteEntry> = state.entries.iter()
         .filter(|e| filter.is_empty() || e.name.to_lowercase().contains(&filter))

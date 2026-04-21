@@ -363,12 +363,21 @@ fn poll_session_events(app: &mut BetterSshApp) {
                         tab.file_explorer.entries = entries;
                         tab.file_explorer.loading = false;
                         tab.file_explorer.loaded  = true;
+                        tab.file_explorer.dir_error = None;
                     }
                 }
                 SessionEvent::SftpUid(uid) => {
                     tab.file_explorer.current_uid = Some(uid);
                 }
                 SessionEvent::SftpOpResult { op, ok, msg } => {
+                    // Détecte les erreurs de listage de répertoire.
+                    let is_list_op = op.starts_with("list ");
+                    let listed_path = if is_list_op {
+                        Some(op.trim_start_matches("list ").to_string())
+                    } else {
+                        None
+                    };
+
                     if ok {
                         tab.file_explorer.add_toast(format!("✓ {op}"));
                         // Rafraîchit le répertoire courant après toute opération réussie.
@@ -377,6 +386,18 @@ fn poll_session_events(app: &mut BetterSshApp) {
                         if let Some(session) = &tab.session {
                             session.send_sftp(SftpCommand::ListDir(path));
                         }
+                    } else if listed_path.as_deref() == Some(tab.file_explorer.current_path.as_str()) {
+                        // Erreur de listage du répertoire courant → accès refusé ou indisponible.
+                        let label = if msg.to_lowercase().contains("permission")
+                            || msg.to_lowercase().contains("denied")
+                            || msg.contains("3")  // code SFTP 3 = permission denied
+                        {
+                            "Accès refusé — droits insuffisants pour lire ce répertoire.".into()
+                        } else {
+                            format!("Impossible de lire le répertoire : {msg}")
+                        };
+                        tab.file_explorer.loading   = false;
+                        tab.file_explorer.dir_error = Some(label);
                     } else {
                         tab.file_explorer.add_toast(format!("✗ {op} : {msg}"));
                     }
