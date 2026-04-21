@@ -78,6 +78,9 @@ pub struct TerminalState {
     /// true si le champ de saisie invisible avait le focus à la frame précédente.
     /// Permet de ne consommer les touches que quand le terminal est actif.
     pub input_focused: bool,
+    /// true = le shell distant gère le buffer (après Tab ou Ctrl+touche).
+    /// Chaque touche est alors envoyée directement au serveur sans buffering local.
+    pub server_managed: bool,
 
     // ── État interne du parseur ANSI ────────────────────────────────────────
     /// Octets reçus mais pas encore parsés (séquences incomplètes).
@@ -105,6 +108,7 @@ impl TerminalState {
             show_history_dropdown: false,
             history_dropdown_idx: None,
             input_focused: false,
+            server_managed: false,
             ansi_buf: Vec::new(),
             current_fg: Color32::from_rgb(204, 204, 204),
             current_bg: None,
@@ -407,72 +411,107 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
         state.show_history_search = !state.show_history_search;
     }
 
-    // ── Gestion des touches pour la liste déroulante (avant le TextEdit) ────
-    // On ne consomme les touches que si le terminal avait le focus la frame précédente,
-    // afin de ne pas voler les flèches/Tab aux autres widgets de l'interface.
+    // ── Gestion des touches (avant le TextEdit) ──────────────────────────────
+    // On ne consomme les touches que si le terminal avait le focus la frame précédente.
     let terminal_active = state.input_focused && !modal_open;
 
     if terminal_active {
-        // Flèche Haut : ouvre ou remonte dans la liste déroulante.
-        if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowUp)) {
-            if !state.show_history_dropdown {
-                let hist = build_filtered_history(&state.session_history, &state.input);
-                if !hist.is_empty() {
-                    state.show_history_dropdown = true;
-                    state.history_dropdown_idx = Some(0);
+        if state.server_managed {
+            // ── Mode piloté par le serveur ────────────────────────────────────
+            // Après un Tab ou une flèche, le shell distant gère le buffer de saisie.
+            // On envoie chaque touche directement, sans buffering local.
+            let mut raw: Vec<u8> = Vec::new();
+
+            // Drain tous les événements Text avant que le TextEdit ne les capte.
+            ui.input_mut(|i| i.events.retain(|e| {
+                if let egui::Event::Text(t) = e {
+                    raw.extend_from_slice(t.as_bytes());
+                    false // supprimé de la queue → TextEdit ne le verra pas
+                } else {
+                    true
                 }
-            } else {
-                let hist = build_filtered_history(&state.session_history, &state.input);
-                let max = hist.len();
-                if let Some(idx) = state.history_dropdown_idx {
-                    if idx + 1 < max {
-                        state.history_dropdown_idx = Some(idx + 1);
+            }));
+
+            // Touches spéciales.
+            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)) {
+                raw.push(b'\n');
+                state.server_managed = false; // retour au mode local après Entrée
+                state.input.clear();
+            }
+            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Backspace)) {
+                raw.push(0x7F); // DEL = backspace côté shell
+            }
+            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Tab)) {
+                raw.push(b'\t'); // nouvelle complétion
+            }
+            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowUp)) {
+                raw.extend_from_slice(b"\x1b[A");
+            }
+            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowDown)) {
+                raw.extend_from_slice(b"\x1b[B");
+            }
+            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowLeft)) {
+                raw.extend_from_slice(b"\x1b[D");
+            }
+            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowRight)) {
+                raw.extend_from_slice(b"\x1b[C");
+            }
+            // Ctrl+C → interruption, retour au mode local.
+            if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::C)) {
+                raw.push(0x03);
+                state.server_managed = false;
+                state.input.clear();
+            }
+
+            if !raw.is_empty() {
+                to_send = Some(raw);
+            }
+        } else {
+            // ── Mode local (buffer côté client) ──────────────────────────────
+
+            // Flèche Haut : ouvre ou remonte dans la liste déroulante.
+            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowUp)) {
+                if !state.show_history_dropdown {
+                    let hist = build_filtered_history(&state.session_history, &state.input);
+                    if !hist.is_empty() {
+                        state.show_history_dropdown = true;
+                        state.history_dropdown_idx = Some(0);
+                    }
+                } else {
+                    let hist = build_filtered_history(&state.session_history, &state.input);
+                    if let Some(idx) = state.history_dropdown_idx {
+                        if idx + 1 < hist.len() {
+                            state.history_dropdown_idx = Some(idx + 1);
+                        }
                     }
                 }
             }
-        }
 
-        // Flèche Bas : descend dans la liste ou ferme si déjà au plus récent.
-        if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowDown)) {
-            if state.show_history_dropdown {
-                match state.history_dropdown_idx {
-                    Some(0) | None => {
-                        state.show_history_dropdown = false;
-                        state.history_dropdown_idx = None;
-                    }
-                    Some(n) => {
-                        state.history_dropdown_idx = Some(n - 1);
+            // Flèche Bas : descend ou ferme la liste.
+            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowDown)) {
+                if state.show_history_dropdown {
+                    match state.history_dropdown_idx {
+                        Some(0) | None => {
+                            state.show_history_dropdown = false;
+                            state.history_dropdown_idx = None;
+                        }
+                        Some(n) => { state.history_dropdown_idx = Some(n - 1); }
                     }
                 }
             }
-        }
 
-        // Échap : ferme la liste sans sélectionner.
-        if state.show_history_dropdown
-            && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape))
-        {
-            state.show_history_dropdown = false;
-            state.history_dropdown_idx = None;
-        }
-
-        // Entrée : si liste ouverte → sélectionne et ferme (sans envoyer).
-        if state.show_history_dropdown
-            && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter))
-        {
-            let hist = build_filtered_history(&state.session_history, &state.input);
-            if let Some(idx) = state.history_dropdown_idx {
-                if let Some(cmd) = hist.get(idx) {
-                    state.input = cmd.clone();
-                }
+            // Échap : ferme la liste sans sélectionner.
+            if state.show_history_dropdown
+                && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape))
+            {
+                state.show_history_dropdown = false;
+                state.history_dropdown_idx = None;
             }
-            state.show_history_dropdown = false;
-            state.history_dropdown_idx = None;
-        }
 
-        // Tab : sélectionne depuis la liste OU envoie la complétion au serveur SSH.
-        if terminal_active && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Tab)) {
-            if state.show_history_dropdown {
-                // Sélectionne l'entrée courante et ferme la liste.
+            // Entrée avec liste ouverte → sélectionne (sans envoyer).
+            if state.show_history_dropdown
+                && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter))
+            {
                 let hist = build_filtered_history(&state.session_history, &state.input);
                 if let Some(idx) = state.history_dropdown_idx {
                     if let Some(cmd) = hist.get(idx) {
@@ -481,13 +520,29 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
                 }
                 state.show_history_dropdown = false;
                 state.history_dropdown_idx = None;
-            } else if !state.input.is_empty() {
-                // Complétion de chemin côté serveur :
-                // envoie ce qui a été tapé + \t pour que le shell distant complète.
-                let mut bytes = state.input.as_bytes().to_vec();
-                bytes.push(b'\t');
-                to_send = Some(bytes);
-                state.input.clear();
+            }
+
+            // Tab : sélectionne dans la liste OU lance la complétion côté serveur.
+            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Tab)) {
+                if state.show_history_dropdown {
+                    let hist = build_filtered_history(&state.session_history, &state.input);
+                    if let Some(idx) = state.history_dropdown_idx {
+                        if let Some(cmd) = hist.get(idx) {
+                            state.input = cmd.clone();
+                        }
+                    }
+                    state.show_history_dropdown = false;
+                    state.history_dropdown_idx = None;
+                } else {
+                    // Envoie le buffer local + \t au shell distant qui complète.
+                    // Puis passe en mode piloté : les prochaines touches vont directement
+                    // au serveur pour continuer à éditer la ligne complétée.
+                    let mut bytes = state.input.as_bytes().to_vec();
+                    bytes.push(b'\t');
+                    to_send = Some(bytes);
+                    state.input.clear();
+                    state.server_managed = true;
+                }
             }
         }
     }
@@ -544,8 +599,13 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
                             if span.bold { rt = rt.strong(); }
                             ui.label(rt);
                         }
-                        // Local echo : affiche ce que l'utilisateur tape (avant envoi) + curseur █.
-                        let echo = format!("{}█", state.input);
+                        // Local echo : en mode piloté par le serveur, seul le curseur
+                        // est affiché (le shell distant gère le buffer et l'affichage).
+                        let echo = if state.server_managed {
+                            "█".to_string()
+                        } else {
+                            format!("{}█", state.input)
+                        };
                         ui.label(
                             egui::RichText::new(echo)
                                 .font(font_id.clone())
