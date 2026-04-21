@@ -1,6 +1,7 @@
 /// Barre d'onglets en haut de la zone centrale.
 /// Chaque onglet représente une session SSH avec un indicateur de connexion.
 use crate::app::BetterSshApp;
+use crate::ui::icons as ph;
 use egui::Ui;
 
 pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
@@ -26,7 +27,7 @@ pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
                 // Bouton de fermeture rouge.
                 if ui.add(
                     egui::Button::new(
-                        egui::RichText::new("✕")
+                        egui::RichText::new(ph::X_CIRCLE)
                             .color(egui::Color32::from_rgb(220, 70, 70))
                             .strong(),
                     )

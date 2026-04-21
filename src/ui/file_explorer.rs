@@ -3,6 +3,7 @@
 /// Panneau droit  : barre d'outils, contenu (grille ou liste), barre de statut.
 /// La permission d'accès de l'utilisateur courant est codée par couleur.
 use crate::ssh::sftp::RemoteEntry;
+use crate::ui::icons as ph;
 use egui::{Color32, FontId, Key, Modifiers, Pos2, Rect, ScrollArea, Stroke, Ui, Vec2};
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
@@ -102,14 +103,14 @@ impl FileExplorerState {
             search_query: String::new(),
             toasts: Vec::new(),
             favorites: vec![
-                ("🏠 /root".into(),      "/root".into()),
-                ("🏠 /home".into(),      "/home".into()),
-                ("⚙ /etc".into(),        "/etc".into()),
-                ("📋 /var/log".into(),   "/var/log".into()),
-                ("🗂 /tmp".into(),       "/tmp".into()),
-                ("📦 /opt".into(),       "/opt".into()),
-                ("🔒 /etc/ssh".into(),   "/etc/ssh".into()),
-                ("🌐 /var/www".into(),   "/var/www".into()),
+                (format!("{} /root", ph::HOUSE),     "/root".into()),
+                (format!("{} /home", ph::HOUSE),     "/home".into()),
+                (format!("{} /etc", ph::GEAR),       "/etc".into()),
+                (format!("{} /var/log", ph::CLIPBOARD), "/var/log".into()),
+                (format!("{} /tmp", ph::FOLDERS),    "/tmp".into()),
+                (format!("{} /opt", ph::PACKAGE),    "/opt".into()),
+                (format!("{} /etc/ssh", ph::LOCK),   "/etc/ssh".into()),
+                (format!("{} /var/www", ph::GLOBE),  "/var/www".into()),
             ],
             item_rects: Vec::new(),
             loaded: false,
@@ -366,13 +367,13 @@ fn render_toolbar(state: &mut FileExplorerState, ui: &mut Ui, req: &mut Option<S
         let can_back    = !state.nav_back.is_empty();
         let can_forward = !state.nav_forward.is_empty();
 
-        if ui.add_enabled(can_back,    egui::Button::new("◁")).on_hover_text("Précédent").clicked() {
+        if ui.add_enabled(can_back,    egui::Button::new(ph::ARROW_LEFT)).on_hover_text("Précédent").clicked() {
             if let Some(r) = state.navigate_back()    { *req = Some(r); }
         }
-        if ui.add_enabled(can_forward, egui::Button::new("▷")).on_hover_text("Suivant").clicked() {
+        if ui.add_enabled(can_forward, egui::Button::new(ph::ARROW_RIGHT)).on_hover_text("Suivant").clicked() {
             if let Some(r) = state.navigate_forward() { *req = Some(r); }
         }
-        if ui.button("↑").on_hover_text("Dossier parent").clicked() {
+        if ui.button(ph::ARROW_UP).on_hover_text("Dossier parent").clicked() {
             if let Some(r) = state.navigate_up() { *req = Some(r); }
         }
 
@@ -403,7 +404,7 @@ fn render_toolbar(state: &mut FileExplorerState, ui: &mut Ui, req: &mut Option<S
                     go = Some("/".to_string() + &parts[..=i].join("/"));
                 }
             }
-            if ui.small_button("✏").on_hover_text("Éditer le chemin").clicked() {
+            if ui.small_button(ph::PENCIL).on_hover_text("Éditer le chemin").clicked() {
                 state.breadcrumb_input = state.current_path.clone();
                 state.breadcrumb_edit = true;
             }
@@ -411,15 +412,15 @@ fn render_toolbar(state: &mut FileExplorerState, ui: &mut Ui, req: &mut Option<S
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let vl = if state.view_mode == ViewMode::Grid { "☰ Liste" } else { "⊞ Grille" };
+            let vl = if state.view_mode == ViewMode::Grid { ph::LIST } else { ph::GRID_FOUR };
             if ui.small_button(vl).clicked() {
                 state.view_mode = if state.view_mode == ViewMode::Grid { ViewMode::List } else { ViewMode::Grid };
             }
-            if ui.small_button("↺").on_hover_text("Rafraîchir").clicked() {
+            if ui.small_button(ph::ARROWS_CLOCKWISE).on_hover_text("Rafraîchir").clicked() {
                 state.loading = true;
                 *req = Some(SftpRequest::ListDir(state.current_path.clone()));
             }
-            if ui.small_button("📁+").on_hover_text("Nouveau dossier").clicked() {
+            if ui.small_button(format!("{}+", ph::FOLDER)).on_hover_text("Nouveau dossier").clicked() {
                 let base = format!("{}/Nouveau dossier", state.current_path.trim_end_matches('/'));
                 let path = unique_name(&state.entries, &base);
                 let fname = filename_of(&path);
@@ -428,7 +429,7 @@ fn render_toolbar(state: &mut FileExplorerState, ui: &mut Ui, req: &mut Option<S
                 state.rename_request_focus = true;
                 *req = Some(SftpRequest::Mkdir(path));
             }
-            if ui.small_button("📄+").on_hover_text("Nouveau fichier").clicked() {
+            if ui.small_button(format!("{}+", ph::FILE)).on_hover_text("Nouveau fichier").clicked() {
                 let base = format!("{}/nouveau_fichier", state.current_path.trim_end_matches('/'));
                 let path = unique_name(&state.entries, &base);
                 let fname = filename_of(&path);
@@ -440,7 +441,7 @@ fn render_toolbar(state: &mut FileExplorerState, ui: &mut Ui, req: &mut Option<S
             ui.add(
                 egui::TextEdit::singleline(&mut state.search_query)
                     .desired_width(110.0)
-                    .hint_text("🔍 Filtrer…"),
+                    .hint_text(format!("{} Filtrer…", ph::MAGNIFYING_GLASS)),
             );
         });
     });
@@ -528,7 +529,7 @@ fn render_list(
                     ui.label(egui::RichText::new("●").color(color).small());
 
                     // Nom ou champ de renommage
-                    let icon = if entry.is_dir { "📁" } else { "📄" };
+                    let icon = if entry.is_dir { ph::FOLDER } else { ph::FILE_TEXT };
                     if state.rename_path.as_deref() == Some(entry.path.as_str()) {
                         if let Some(new_name) = render_rename(state, ui, &entry.path) {
                             let to = format!("{}/{new_name}", state.current_path.trim_end_matches('/'));
@@ -676,13 +677,13 @@ fn ctx_menu(
 ) {
     if let Some(p) = path {
         if is_dir {
-            if ui.button("📂 Ouvrir").clicked() {
+            if ui.button(format!("{} Ouvrir", ph::FOLDER_OPEN)).clicked() {
                 *req = Some(state.navigate_to(p.to_string())); ui.close_menu();
             }
-        } else if ui.button("⬇ Télécharger").clicked() {
+        } else if ui.button(format!("{} Télécharger", ph::DOWNLOAD_SIMPLE)).clicked() {
             *req = Some(SftpRequest::Download { remote: p.to_string() }); ui.close_menu();
         }
-        if ui.button("✏ Renommer  [F2]").clicked() {
+        if ui.button(format!("{} Renommer  [F2]", ph::PENCIL)).clicked() {
             let name = state.entries.iter().find(|e| e.path == p)
                 .map(|e| e.name.clone()).unwrap_or_default();
             state.rename_path = Some(p.to_string());
@@ -691,18 +692,18 @@ fn ctx_menu(
             ui.close_menu();
         }
         ui.separator();
-        if ui.button("📋 Copier  [Ctrl+C]").clicked() {
+        if ui.button(format!("{} Copier  [Ctrl+C]", ph::CLIPBOARD)).clicked() {
             state.clipboard = Some(ClipEntry { op: ClipOp::Copy, paths: vec![p.to_string()] });
             state.add_toast("Copié"); ui.close_menu();
         }
-        if ui.button("✂ Couper  [Ctrl+X]").clicked() {
+        if ui.button(format!("{} Couper  [Ctrl+X]", ph::SCISSORS)).clicked() {
             state.clipboard = Some(ClipEntry { op: ClipOp::Cut, paths: vec![p.to_string()] });
             state.add_toast("Coupé"); ui.close_menu();
         }
         ui.separator();
         let n_sel = if state.selected.contains(p) { state.selected.len() } else { 1 };
         if ui.add(egui::Button::new(
-            egui::RichText::new(format!("🗑 Supprimer ({n_sel})  [Suppr]"))
+            egui::RichText::new(format!("{} Supprimer ({n_sel})  [Suppr]", ph::TRASH))
                 .color(egui::Color32::from_rgb(220, 70, 70))
         )).clicked() {
             let paths = if state.selected.contains(p) {
@@ -714,14 +715,14 @@ fn ctx_menu(
             ui.close_menu();
         }
         ui.separator();
-        if ui.button("📋 Copier le chemin").clicked() {
+        if ui.button(format!("{} Copier le chemin", ph::CLIPBOARD)).clicked() {
             ui.output_mut(|o| o.copied_text = p.to_string());
             state.add_toast("Chemin copié"); ui.close_menu();
         }
     } else {
         ui.label(egui::RichText::new("Créer").strong().small());
         ui.separator();
-        if ui.button("📁 Nouveau dossier").clicked() {
+        if ui.button(format!("{} Nouveau dossier", ph::FOLDER_PLUS)).clicked() {
             let base = format!("{}/Nouveau dossier", state.current_path.trim_end_matches('/'));
             let p = unique_name(&state.entries, &base);
             state.rename_path = Some(p.clone());
@@ -730,7 +731,7 @@ fn ctx_menu(
             *req = Some(SftpRequest::Mkdir(p));
             ui.close_menu();
         }
-        if ui.button("📄 Nouveau fichier").clicked() {
+        if ui.button(format!("{} Nouveau fichier", ph::FILE_PLUS)).clicked() {
             let base = format!("{}/nouveau_fichier", state.current_path.trim_end_matches('/'));
             let p = unique_name(&state.entries, &base);
             state.rename_path = Some(p.clone());
@@ -744,11 +745,11 @@ fn ctx_menu(
     if state.clipboard.is_some() {
         ui.separator();
         let lbl = match state.clipboard.as_ref().map(|c| &c.op) {
-            Some(ClipOp::Copy) => "📋 Coller (copie)  [Ctrl+V]",
-            Some(ClipOp::Cut)  => "📋 Coller (déplacer)  [Ctrl+V]",
-            None => "📋 Coller",
+            Some(ClipOp::Copy) => format!("{} Coller (copie)  [Ctrl+V]", ph::CLIPBOARD),
+            Some(ClipOp::Cut)  => format!("{} Coller (déplacer)  [Ctrl+V]", ph::CLIPBOARD),
+            None => format!("{} Coller", ph::CLIPBOARD),
         };
-        if ui.button(lbl).clicked() {
+        if ui.button(&lbl).clicked() {
             if let Some(clip) = state.clipboard.clone() {
                 let dest = state.current_path.clone();
                 if clip.op == ClipOp::Cut { state.clipboard = None; }
