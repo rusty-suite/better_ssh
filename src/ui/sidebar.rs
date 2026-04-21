@@ -163,7 +163,7 @@ pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
             let mut profile = app.sidebar.profiles[i].clone();
             if let Some(vault) = &app.vault {
                 if profile.host.is_empty() {
-                    profile.host = vault.get_host(&profile.id).ok().flatten().unwrap_or_default();
+                    profile.host = vault.get_address(&profile.id).ok().flatten().unwrap_or_default();
                 }
                 if profile.username.is_empty() {
                     profile.username = vault.get_username(&profile.id).ok().flatten().unwrap_or_default();
@@ -193,7 +193,7 @@ pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
         // Charge hôte, utilisateur et mot de passe depuis le vault.
         if let Some(vault) = &app.vault {
             if profile.host.is_empty() {
-                profile.host = vault.get_host(&profile.id).ok().flatten().unwrap_or_default();
+                profile.host = vault.get_address(&profile.id).ok().flatten().unwrap_or_default();
             }
             if profile.username.is_empty() {
                 profile.username = vault.get_username(&profile.id).ok().flatten().unwrap_or_default();
@@ -298,7 +298,7 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                     if ui.add_enabled(can_unlock, egui::Button::new("🔓 Déverrouiller")).clicked() {
                         let vault = Vault::new(vault_key_input.clone());
                         if profile.host.is_empty() {
-                            profile.host = vault.get_host(&profile.id)
+                            profile.host = vault.get_address(&profile.id)
                                 .ok().flatten().unwrap_or_default();
                         }
                         if profile.username.is_empty() {
@@ -449,7 +449,7 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                                     if ui.add_enabled(can_unlock, egui::Button::new("🔓 Déverrouiller")).clicked() {
                                         let vault = Vault::new(vault_key_input.clone());
                                         if profile.host.is_empty() {
-                                            profile.host = vault.get_host(&profile.id)
+                                            profile.host = vault.get_address(&profile.id)
                                                 .ok().flatten().unwrap_or_default();
                                         }
                                         if profile.username.is_empty() {
@@ -547,7 +547,7 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
             // Chiffre et sauvegarde hôte, utilisateur et mot de passe dans le vault.
             if let Some(vault) = &app.vault {
                 if !profile.host.is_empty() {
-                    if let Err(e) = vault.store_host(&profile.id, &profile.host) {
+                    if let Err(e) = vault.store_address(&profile.id, &profile.host) {
                         log::error!("Impossible de sauvegarder l'hôte dans le vault : {e}");
                     }
                 }
@@ -579,7 +579,7 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
             // Chiffre et sauvegarde hôte, utilisateur et mot de passe dans le vault.
             if let Some(vault) = &app.vault {
                 if !profile.host.is_empty() {
-                    if let Err(e) = vault.store_host(&profile.id, &profile.host) {
+                    if let Err(e) = vault.store_address(&profile.id, &profile.host) {
                         log::error!("Impossible de sauvegarder l'hôte dans le vault : {e}");
                     }
                 }
@@ -595,7 +595,7 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
             // Re-hydrate hôte/utilisateur depuis le vault si toujours vides.
             if let Some(vault) = &app.vault {
                 if profile.host.is_empty() {
-                    profile.host = vault.get_host(&profile.id).ok().flatten().unwrap_or_default();
+                    profile.host = vault.get_address(&profile.id).ok().flatten().unwrap_or_default();
                 }
                 if profile.username.is_empty() {
                     profile.username = vault.get_username(&profile.id).ok().flatten().unwrap_or_default();

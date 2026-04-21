@@ -190,7 +190,7 @@ impl BetterSshApp {
         if let Some(vault) = &self.vault {
             for profile in &mut self.sidebar.profiles {
                 if profile.host.is_empty() {
-                    profile.host = vault.get_host(&profile.id)
+                    profile.host = vault.get_address(&profile.id)
                         .ok().flatten().unwrap_or_default();
                 }
                 if profile.username.is_empty() {
