@@ -225,7 +225,7 @@ fn render_modals(app: &mut BetterSshApp, ctx: &Context) {
                 None => ("root".to_string(), AuthMethod::Password, String::new(), None),
             };
 
-            // Tente de charger le mot de passe depuis le vault si celui-ci est déjà ouvert.
+            // Tente de charger le mot de passe et le nom d'utilisateur depuis le vault.
             let (mut password, vault_password_loaded) =
                 if let (Some(vault), Some(id)) = (&app.vault, &existing_profile_id) {
                     match vault.get_password(id) {
@@ -235,6 +235,15 @@ fn render_modals(app: &mut BetterSshApp, ctx: &Context) {
                 } else {
                     (String::new(), false)
                 };
+
+            let mut username = username;
+            if username.is_empty() || username == "root" {
+                if let (Some(vault), Some(id)) = (&app.vault, &existing_profile_id) {
+                    if let Ok(Some(u)) = vault.get_username(id) {
+                        if !u.is_empty() { username = u; }
+                    }
+                }
+            }
 
             app.pending_scan_connect = Some(ScanConnectDialog {
                 scan_result: result,
@@ -734,7 +743,7 @@ fn render_scan_connect_dialog(app: &mut BetterSshApp, ctx: &Context) {
 
         // ── 3. Stocker hôte, utilisateur et mot de passe dans le vault ──────────
         if let Some(vault) = &app.vault {
-            if let Err(e) = vault.store_host(&profile_id, &profile.host) {
+            if let Err(e) = vault.store_address(&profile_id, &profile.host) {
                 log::error!("Impossible de sauvegarder l'hôte dans le vault : {e}");
             }
             if let Err(e) = vault.store_username(&profile_id, &dlg.username) {
