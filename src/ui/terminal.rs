@@ -416,6 +416,13 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
     let terminal_active = state.input_focused && !modal_open;
 
     if terminal_active {
+        // egui génère deux événements distincts pour Tab : Key::Tab ET Text("\t").
+        // consume_key() supprime le premier mais pas le second ; le TextEdit reçoit
+        // alors Text("\t") et insère un caractère tabulation littéral dans state.input.
+        // On drainne Text("\t") systématiquement — un tab littéral n'a aucun sens
+        // dans un terminal (le shell gère la complétion via le caractère \t envoyé).
+        ui.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Text(t) if t == "\t")));
+
         if state.server_managed {
             // ── Mode piloté par le serveur ────────────────────────────────────
             // Après un Tab ou une flèche, le shell distant gère le buffer de saisie.
