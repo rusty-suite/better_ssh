@@ -389,8 +389,36 @@ fn poll_session_events(app: &mut BetterSshApp) {
 /// Initialise les polices egui et définit les styles de texte de l'application.
 /// `terminal_size` est la taille en points utilisée pour la police monospace.
 pub fn setup_fonts(ctx: &Context, terminal_size: f32) {
-    // Garde les polices par défaut d'egui (Ubuntu pour le texte, Hack pour le code).
-    let fonts = egui::FontDefinitions::default();
+    let mut fonts = egui::FontDefinitions::default();
+
+    // Police d'icônes Phosphor (zone Unicode privée — jamais en collision avec le texte).
+    crate::ui::icons::install(&mut fonts);
+
+    // Polices système à charger comme fallback pour les glyphes Unicode manquants.
+    // Ordre : symboles généraux → emoji → CJK.
+    #[cfg(target_os = "windows")]
+    let fallback_candidates: &[(&str, &str)] = &[
+        ("C:/Windows/Fonts/seguisym.ttf",  "SegoeSym"),   // symboles, box-drawing, flèches…
+        ("C:/Windows/Fonts/seguiemj.ttf",  "SegoeEmoji"), // emoji couleur
+        ("C:/Windows/Fonts/meiryo.ttc",    "Meiryo"),     // CJK japonais
+        ("C:/Windows/Fonts/simsun.ttc",    "SimSun"),     // CJK chinois
+    ];
+    #[cfg(not(target_os = "windows"))]
+    let fallback_candidates: &[(&str, &str)] = &[
+        ("/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",       "NotoSans"),
+        ("/usr/share/fonts/truetype/noto/NotoSansSymbols-Regular.ttf","NotoSymbols"),
+        ("/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",         "NotoEmoji"),
+    ];
+
+    for (path, name) in fallback_candidates {
+        if let Ok(bytes) = std::fs::read(path) {
+            fonts.font_data.insert(name.to_string(), egui::FontData::from_owned(bytes));
+            // Ajout en fin de liste = consulté seulement si le glyphe est absent des polices précédentes.
+            fonts.families.entry(egui::FontFamily::Proportional).or_default().push(name.to_string());
+            fonts.families.entry(egui::FontFamily::Monospace).or_default().push(name.to_string());
+        }
+    }
+
     ctx.set_fonts(fonts);
 
     // Ajuste les tailles de style tout en respectant le ratio terminal/UI.

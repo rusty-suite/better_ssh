@@ -2,6 +2,7 @@
 /// Organise les panneaux egui : barre du haut, barre latérale, zone centrale,
 /// barre de statut, et fenêtres modales (préférences, snippets, scan réseau).
 pub mod file_explorer;
+pub mod icons;
 pub mod network_scan;
 pub mod sidebar;
 pub mod snippets;
@@ -13,6 +14,7 @@ use crate::app::{apply_theme, setup_fonts, BetterSshApp, ScanConnectDialog};
 use crate::config::{AuthMethod, ConnectionProfile, Vault};
 use crate::ssh::session::SftpCommand;
 use crate::ui::file_explorer::SftpRequest;
+use crate::ui::icons as ph;
 use crate::ui::network_scan::ScanAction;
 use egui::Context;
 
@@ -41,15 +43,21 @@ fn render_top_bar(app: &mut BetterSshApp, ctx: &Context) {
 
             // Contrôles à droite : thème + préférences
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let label = if app.dark_mode { "☀ Clair" } else { "🌙 Sombre" };
+                let label = if app.dark_mode {
+                    format!("{} Clair", ph::SUN)
+                } else {
+                    format!("{} Sombre", ph::MOON)
+                };
                 if ui.button(label).on_hover_text("Basculer le thème (clair/sombre)").clicked() {
                     app.dark_mode = !app.dark_mode;
                     apply_theme(ctx, app.dark_mode);
                 }
-                if ui.button("⚙ Préférences").clicked() {
+                if ui.button(format!("{} Préférences", ph::GEAR)).clicked() {
                     app.show_preferences = !app.show_preferences;
                 }
-                if ui.button("🔍 Scanner").on_hover_text("Scan réseau SSH (F5)").clicked() {
+                if ui.button(format!("{} Scanner", ph::MAGNIFYING_GLASS))
+                    .on_hover_text("Scan réseau SSH (F5)").clicked()
+                {
                     app.show_network_scan = !app.show_network_scan;
                 }
             });
@@ -196,7 +204,7 @@ fn render_modals(app: &mut BetterSshApp, ctx: &Context) {
     if app.show_network_scan {
         let mut open = app.show_network_scan;
         let mut action = ScanAction::None;
-        egui::Window::new("🔍 Scan réseau SSH")
+        egui::Window::new(format!("{} Scan réseau SSH", ph::MAGNIFYING_GLASS))
             .open(&mut open)
             .default_size([780.0, 560.0])
             .show(ctx, |ui| {
@@ -314,7 +322,7 @@ fn shortcut(ui: &mut egui::Ui, keys: &str, desc: &str) {
 fn render_preferences(app: &mut BetterSshApp, ctx: &Context) {
     let mut open = app.show_preferences;
 
-    egui::Window::new("⚙ Préférences")
+    egui::Window::new(format!("{} Préférences", ph::GEAR))
         .open(&mut open)
         .default_size([480.0, 420.0])
         .collapsible(false)
@@ -325,11 +333,11 @@ fn render_preferences(app: &mut BetterSshApp, ctx: &Context) {
                 ui.separator();
                 ui.horizontal(|ui| {
                     ui.label("Thème :");
-                    if ui.selectable_label(app.dark_mode, "🌙 Sombre").clicked() {
+                    if ui.selectable_label(app.dark_mode, format!("{} Sombre", ph::MOON)).clicked() {
                         app.dark_mode = true;
                         apply_theme(ctx, true);
                     }
-                    if ui.selectable_label(!app.dark_mode, "☀ Clair").clicked() {
+                    if ui.selectable_label(!app.dark_mode, format!("{} Clair", ph::SUN)).clicked() {
                         app.dark_mode = false;
                         apply_theme(ctx, false);
                     }
@@ -437,7 +445,7 @@ fn render_preferences(app: &mut BetterSshApp, ctx: &Context) {
                 ui.add_space(12.0);
 
                 // ── Bouton Sauvegarder ────────────────────────────────────────
-                if ui.button("💾 Sauvegarder les préférences").clicked() {
+                if ui.button(format!("{} Sauvegarder les préférences", ph::FLOPPY_DISK)).clicked() {
                     app.save_config();
                 }
 
@@ -594,7 +602,7 @@ fn render_scan_connect_dialog(app: &mut BetterSshApp, ctx: &Context) {
                                 if dlg.vault_password_loaded {
                                     // Mot de passe chargé depuis le vault → indicateur vert.
                                     ui.label(
-                                        egui::RichText::new("✓ Chargé depuis le vault")
+                                        egui::RichText::new(format!("{} Chargé depuis le vault", ph::CHECK))
                                             .small()
                                             .color(egui::Color32::from_rgb(80, 200, 80)),
                                     );
@@ -619,7 +627,7 @@ fn render_scan_connect_dialog(app: &mut BetterSshApp, ctx: &Context) {
                             ui.vertical(|ui| {
                                 if app.vault.is_some() {
                                     ui.label(
-                                        egui::RichText::new("🔓 Vault déverrouillé")
+                                        egui::RichText::new(format!("{} Vault déverrouillé", ph::LOCK_OPEN))
                                             .small()
                                             .color(egui::Color32::from_rgb(80, 200, 80)),
                                     );
@@ -630,7 +638,7 @@ fn render_scan_connect_dialog(app: &mut BetterSshApp, ctx: &Context) {
                                     );
                                 } else {
                                     ui.label(
-                                        egui::RichText::new("🔒 Vault verrouillé").small().weak(),
+                                        egui::RichText::new(format!("{} Vault verrouillé", ph::LOCK)).small().weak(),
                                     );
                                     ui.add(
                                         egui::TextEdit::singleline(&mut dlg.vault_key_input)
@@ -684,7 +692,7 @@ fn render_scan_connect_dialog(app: &mut BetterSshApp, ctx: &Context) {
                     };
 
                 ui.add_enabled_ui(can_connect, |ui| {
-                    if ui.button("🔌 Connecter").clicked() {
+                    if ui.button(format!("{} Connecter", ph::PLUG)).clicked() {
                         do_connect = true;
                     }
                 });
