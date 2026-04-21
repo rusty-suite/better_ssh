@@ -388,6 +388,46 @@ fn push_session_history(history: &mut VecDeque<String>, cmd: &str) {
     }
 }
 
+// ─── Helpers édition ─────────────────────────────────────────────────────────
+
+/// Supprime le dernier mot du buffer local (équivalent readline Ctrl+W).
+/// Respecte les guillemets : efface jusqu'à l'espace non-quoté précédent.
+fn delete_last_word(input: &mut String) {
+    let chars: Vec<char> = input.chars().collect();
+    if chars.is_empty() { return; }
+
+    // Ignore les espaces trailing.
+    let mut end = chars.len();
+    while end > 0 && chars[end - 1] == ' ' {
+        end -= 1;
+    }
+    if end == 0 { input.clear(); return; }
+
+    // Recule jusqu'au premier espace non précédé d'un backslash ou hors guillemets.
+    let mut i = end;
+    let mut in_single = false;
+    let mut in_double = false;
+    // Rescan depuis le début pour connaître l'état des guillemets à position `end`.
+    let mut j = 0;
+    while j < end {
+        match chars[j] {
+            '\'' if !in_double => in_single = !in_single,
+            '"'  if !in_single => in_double = !in_double,
+            '\\' if j + 1 < end => { j += 1; } // skip escaped char
+            _ => {}
+        }
+        j += 1;
+    }
+    // Recule sur le mot (espaces non-quotés = délimiteurs).
+    while i > 0 {
+        let c = chars[i - 1];
+        if c == ' ' && !in_single && !in_double { break; }
+        i -= 1;
+    }
+
+    *input = chars[..i].iter().collect();
+}
+
 // ─── Rendu egui ──────────────────────────────────────────────────────────────
 
 /// Retourne les octets à envoyer au serveur SSH si l'utilisateur a validé une saisie,
@@ -425,7 +465,7 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
 
         if state.server_managed {
             // ── Mode piloté par le serveur ────────────────────────────────────
-            // Après un Tab ou une flèche, le shell distant gère le buffer de saisie.
+            // Après un Tab, le shell distant gère le buffer de saisie.
             // On envoie chaque touche directement, sans buffering local.
             let mut raw: Vec<u8> = Vec::new();
 
@@ -433,24 +473,29 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
             ui.input_mut(|i| i.events.retain(|e| {
                 if let egui::Event::Text(t) = e {
                     raw.extend_from_slice(t.as_bytes());
-                    false // supprimé de la queue → TextEdit ne le verra pas
+                    false
                 } else {
                     true
                 }
             }));
 
-            // Touches spéciales.
+            // ── Touches de navigation readline ────────────────────────────────
             if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)) {
                 raw.push(b'\n');
-                state.server_managed = false; // retour au mode local après Entrée
+                state.server_managed = false;
                 state.input.clear();
             }
             if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Backspace)) {
-                raw.push(0x7F); // DEL = backspace côté shell
+                raw.push(0x7F);
+            }
+            // Delete (Suppr) → séquence VT delete-char
+            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Delete)) {
+                raw.extend_from_slice(b"\x1b[3~");
             }
             if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Tab)) {
-                raw.push(b'\t'); // nouvelle complétion
+                raw.push(b'\t');
             }
+            // Flèches
             if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowUp)) {
                 raw.extend_from_slice(b"\x1b[A");
             }
@@ -463,11 +508,48 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
             if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowRight)) {
                 raw.extend_from_slice(b"\x1b[C");
             }
+            // Home / End → début / fin de ligne (readline: Ctrl+A / Ctrl+E)
+            if ui.input_mut(|i| {
+                i.consume_key(Modifiers::NONE, Key::Home)
+                    || i.consume_key(Modifiers::CTRL, Key::A)
+            }) {
+                raw.push(0x01); // Ctrl+A
+            }
+            if ui.input_mut(|i| {
+                i.consume_key(Modifiers::NONE, Key::End)
+                    || i.consume_key(Modifiers::CTRL, Key::E)
+            }) {
+                raw.push(0x05); // Ctrl+E
+            }
+            // Ctrl+W : supprime le mot précédant le curseur
+            if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::W)) {
+                raw.push(0x17);
+            }
+            // Ctrl+U : efface du début de ligne jusqu'au curseur
+            if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::U)) {
+                raw.push(0x15);
+            }
+            // Ctrl+K : efface du curseur jusqu'à la fin de ligne
+            if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::K)) {
+                raw.push(0x0b);
+            }
+            // Ctrl+L : clear screen (équivalent à `clear`)
+            if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::L)) {
+                raw.push(0x0c);
+            }
+            // Ctrl+D : EOF (déconnexion ou fin de saisie)
+            if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::D)) {
+                raw.push(0x04);
+            }
             // Ctrl+C → interruption, retour au mode local.
             if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::C)) {
                 raw.push(0x03);
                 state.server_managed = false;
                 state.input.clear();
+            }
+            // Ctrl+Z : suspend (SIGTSTP)
+            if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::Z)) {
+                raw.push(0x1a);
             }
 
             if !raw.is_empty() {
@@ -475,6 +557,33 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
             }
         } else {
             // ── Mode local (buffer côté client) ──────────────────────────────
+
+            // Ctrl+C : interrompt et efface le buffer local.
+            if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::C)) {
+                state.input.clear();
+                state.show_history_dropdown = false;
+                state.history_dropdown_idx = None;
+                to_send = Some(vec![0x03]);
+            }
+
+            // Ctrl+U : efface tout le buffer local (équivalent readline).
+            if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::U)) {
+                state.input.clear();
+                state.show_history_dropdown = false;
+                state.history_dropdown_idx = None;
+            }
+
+            // Ctrl+W : supprime le dernier mot du buffer local.
+            if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::W)) {
+                delete_last_word(&mut state.input);
+                state.show_history_dropdown = false;
+                state.history_dropdown_idx = None;
+            }
+
+            // Ctrl+L : clear screen (envoyé au serveur même en mode local).
+            if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::L)) {
+                to_send = Some(vec![0x0c]);
+            }
 
             // Flèche Haut : ouvre ou remonte dans la liste déroulante.
             if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowUp)) {
@@ -507,12 +616,14 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
                 }
             }
 
-            // Échap : ferme la liste sans sélectionner.
-            if state.show_history_dropdown
-                && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape))
-            {
-                state.show_history_dropdown = false;
-                state.history_dropdown_idx = None;
+            // Échap : ferme la liste, ou efface le buffer si la liste est déjà fermée.
+            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+                if state.show_history_dropdown {
+                    state.show_history_dropdown = false;
+                    state.history_dropdown_idx = None;
+                } else {
+                    state.input.clear();
+                }
             }
 
             // Entrée avec liste ouverte → sélectionne (sans envoyer).
@@ -541,9 +652,11 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
                     state.show_history_dropdown = false;
                     state.history_dropdown_idx = None;
                 } else {
-                    // Envoie le buffer local + \t au shell distant qui complète.
-                    // Puis passe en mode piloté : les prochaines touches vont directement
-                    // au serveur pour continuer à éditer la ligne complétée.
+                    // Envoie le buffer local + \t au shell distant.
+                    // Le shell gère la complétion en tenant compte du contexte :
+                    // guillemets ouverts, redirections, pipes, etc.
+                    // readline reçoit les octets un par un via le PTY et traite
+                    // \t comme une demande de complétion (pas comme du texte collé).
                     let mut bytes = state.input.as_bytes().to_vec();
                     bytes.push(b'\t');
                     to_send = Some(bytes);
