@@ -81,6 +81,10 @@ pub struct TerminalState {
     /// true = le shell distant gère le buffer (après Tab ou Ctrl+touche).
     /// Chaque touche est alors envoyée directement au serveur sans buffering local.
     pub server_managed: bool,
+    /// Écho local des caractères tapés en mode server_managed, effacé dès que le
+    /// serveur répond (via feed). Permet un retour visuel immédiat sans attendre
+    /// l'aller-retour réseau.
+    pub server_mode_echo: String,
 
     // ── État interne du parseur ANSI ────────────────────────────────────────
     /// Octets reçus mais pas encore parsés (séquences incomplètes).
@@ -109,6 +113,7 @@ impl TerminalState {
             history_dropdown_idx: None,
             input_focused: false,
             server_managed: false,
+            server_mode_echo: String::new(),
             ansi_buf: Vec::new(),
             current_fg: Color32::from_rgb(204, 204, 204),
             current_bg: None,
@@ -119,6 +124,9 @@ impl TerminalState {
 
     /// Injecte des octets bruts reçus du canal SSH dans le parseur ANSI.
     pub fn feed(&mut self, data: &[u8]) {
+        // Le serveur a répondu → son écho est désormais affiché dans current_line.
+        // L'écho local en mode server_managed est effacé pour éviter le doublon.
+        self.server_mode_echo.clear();
         self.ansi_buf.extend_from_slice(data);
         self.process_buffer();
     }
@@ -451,28 +459,39 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
         state.show_history_search = !state.show_history_search;
     }
 
-    // ── Gestion des touches (avant le TextEdit) ──────────────────────────────
-    // On ne consomme les touches que si le terminal avait le focus la frame précédente.
-    let terminal_active = state.input_focused && !modal_open;
+    // ── Gestion des touches (avant tout widget) ──────────────────────────────
+    // terminal_active inclut server_managed : même si egui a déplacé le focus
+    // suite à un Tab, on continue de traiter les touches dans ce mode.
+    let terminal_active = (state.input_focused || state.server_managed) && !modal_open;
 
     if terminal_active {
-        // egui génère deux événements distincts pour Tab : Key::Tab ET Text("\t").
-        // consume_key() supprime le premier mais pas le second ; le TextEdit reçoit
-        // alors Text("\t") et insère un caractère tabulation littéral dans state.input.
-        // On drainne Text("\t") systématiquement — un tab littéral n'a aucun sens
-        // dans un terminal (le shell gère la complétion via le caractère \t envoyé).
-        ui.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Text(t) if t == "\t")));
+        // ── Interception du Tab ───────────────────────────────────────────────
+        // On retire les événements Tab de la queue d'événements EN PREMIER,
+        // avant que tout widget egui ne les voie. Cela empêche la traversée
+        // de focus GUI (boutons, champs...) pendant la complétion.
+        // On capture si Tab était présent pour le traiter nous-mêmes.
+        let tab_pressed = ui.input_mut(|i| {
+            let found = i.events.iter().any(|e| {
+                matches!(e, egui::Event::Key { key: Key::Tab, pressed: true, .. })
+            });
+            i.events.retain(|e| match e {
+                egui::Event::Key { key: Key::Tab, pressed: true, .. } => false,
+                egui::Event::Text(t) if t == "\t" => false,
+                _ => true,
+            });
+            found
+        });
 
         if state.server_managed {
             // ── Mode piloté par le serveur ────────────────────────────────────
-            // Après un Tab, le shell distant gère le buffer de saisie.
-            // On envoie chaque touche directement, sans buffering local.
+            // Chaque touche est envoyée directement au serveur.
             let mut raw: Vec<u8> = Vec::new();
 
-            // Drain tous les événements Text avant que le TextEdit ne les capte.
+            // Drain les Text events ; alimente server_mode_echo pour l'écho local.
             ui.input_mut(|i| i.events.retain(|e| {
                 if let egui::Event::Text(t) = e {
                     raw.extend_from_slice(t.as_bytes());
+                    state.server_mode_echo.push_str(t);
                     false
                 } else {
                     true
@@ -483,71 +502,79 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
             if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)) {
                 raw.push(b'\n');
                 state.server_managed = false;
+                state.server_mode_echo.clear();
                 state.input.clear();
             }
             if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Backspace)) {
                 raw.push(0x7F);
+                state.server_mode_echo.pop();
             }
-            // Delete (Suppr) → séquence VT delete-char
             if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Delete)) {
                 raw.extend_from_slice(b"\x1b[3~");
+                state.server_mode_echo.clear();
             }
-            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Tab)) {
+            // Tab via tab_pressed (déjà retiré de la queue ci-dessus).
+            if tab_pressed {
                 raw.push(b'\t');
+                // Le shell va réécrire la ligne complète → écho local invalide.
+                state.server_mode_echo.clear();
             }
-            // Flèches
+            // Flèches : position curseur inconnue localement après déplacement.
             if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowUp)) {
                 raw.extend_from_slice(b"\x1b[A");
+                state.server_mode_echo.clear();
             }
             if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowDown)) {
                 raw.extend_from_slice(b"\x1b[B");
+                state.server_mode_echo.clear();
             }
             if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowLeft)) {
                 raw.extend_from_slice(b"\x1b[D");
+                state.server_mode_echo.clear();
             }
             if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowRight)) {
                 raw.extend_from_slice(b"\x1b[C");
+                state.server_mode_echo.clear();
             }
-            // Home / End → début / fin de ligne (readline: Ctrl+A / Ctrl+E)
             if ui.input_mut(|i| {
                 i.consume_key(Modifiers::NONE, Key::Home)
                     || i.consume_key(Modifiers::CTRL, Key::A)
             }) {
-                raw.push(0x01); // Ctrl+A
+                raw.push(0x01);
+                state.server_mode_echo.clear();
             }
             if ui.input_mut(|i| {
                 i.consume_key(Modifiers::NONE, Key::End)
                     || i.consume_key(Modifiers::CTRL, Key::E)
             }) {
-                raw.push(0x05); // Ctrl+E
+                raw.push(0x05);
+                state.server_mode_echo.clear();
             }
-            // Ctrl+W : supprime le mot précédant le curseur
             if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::W)) {
                 raw.push(0x17);
+                delete_last_word(&mut state.server_mode_echo);
             }
-            // Ctrl+U : efface du début de ligne jusqu'au curseur
             if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::U)) {
                 raw.push(0x15);
+                state.server_mode_echo.clear();
             }
-            // Ctrl+K : efface du curseur jusqu'à la fin de ligne
             if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::K)) {
                 raw.push(0x0b);
+                state.server_mode_echo.clear();
             }
-            // Ctrl+L : clear screen (équivalent à `clear`)
             if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::L)) {
                 raw.push(0x0c);
+                state.server_mode_echo.clear();
             }
-            // Ctrl+D : EOF (déconnexion ou fin de saisie)
             if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::D)) {
                 raw.push(0x04);
             }
-            // Ctrl+C → interruption, retour au mode local.
             if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::C)) {
                 raw.push(0x03);
                 state.server_managed = false;
+                state.server_mode_echo.clear();
                 state.input.clear();
             }
-            // Ctrl+Z : suspend (SIGTSTP)
             if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::Z)) {
                 raw.push(0x1a);
             }
@@ -558,7 +585,6 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
         } else {
             // ── Mode local (buffer côté client) ──────────────────────────────
 
-            // Ctrl+C : interrompt et efface le buffer local.
             if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::C)) {
                 state.input.clear();
                 state.show_history_dropdown = false;
@@ -566,26 +592,22 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
                 to_send = Some(vec![0x03]);
             }
 
-            // Ctrl+U : efface tout le buffer local (équivalent readline).
             if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::U)) {
                 state.input.clear();
                 state.show_history_dropdown = false;
                 state.history_dropdown_idx = None;
             }
 
-            // Ctrl+W : supprime le dernier mot du buffer local.
             if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::W)) {
                 delete_last_word(&mut state.input);
                 state.show_history_dropdown = false;
                 state.history_dropdown_idx = None;
             }
 
-            // Ctrl+L : clear screen (envoyé au serveur même en mode local).
             if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::L)) {
                 to_send = Some(vec![0x0c]);
             }
 
-            // Flèche Haut : ouvre ou remonte dans la liste déroulante.
             if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowUp)) {
                 if !state.show_history_dropdown {
                     let hist = build_filtered_history(&state.session_history, &state.input);
@@ -603,7 +625,6 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
                 }
             }
 
-            // Flèche Bas : descend ou ferme la liste.
             if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowDown)) {
                 if state.show_history_dropdown {
                     match state.history_dropdown_idx {
@@ -616,7 +637,6 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
                 }
             }
 
-            // Échap : ferme la liste, ou efface le buffer si la liste est déjà fermée.
             if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
                 if state.show_history_dropdown {
                     state.show_history_dropdown = false;
@@ -626,7 +646,6 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
                 }
             }
 
-            // Entrée avec liste ouverte → sélectionne (sans envoyer).
             if state.show_history_dropdown
                 && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter))
             {
@@ -640,8 +659,8 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
                 state.history_dropdown_idx = None;
             }
 
-            // Tab : sélectionne dans la liste OU lance la complétion côté serveur.
-            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Tab)) {
+            // Tab via tab_pressed (déjà retiré de la queue ci-dessus).
+            if tab_pressed {
                 if state.show_history_dropdown {
                     let hist = build_filtered_history(&state.session_history, &state.input);
                     if let Some(idx) = state.history_dropdown_idx {
@@ -652,11 +671,9 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
                     state.show_history_dropdown = false;
                     state.history_dropdown_idx = None;
                 } else {
-                    // Envoie le buffer local + \t au shell distant.
-                    // Le shell gère la complétion en tenant compte du contexte :
-                    // guillemets ouverts, redirections, pipes, etc.
-                    // readline reçoit les octets un par un via le PTY et traite
-                    // \t comme une demande de complétion (pas comme du texte collé).
+                    // Envoie le buffer local + \t au shell.
+                    // readline reçoit les octets via le PTY et traite \t comme
+                    // complétion en tenant compte du contexte (guillemets, pipes…).
                     let mut bytes = state.input.as_bytes().to_vec();
                     bytes.push(b'\t');
                     to_send = Some(bytes);
@@ -719,10 +736,11 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
                             if span.bold { rt = rt.strong(); }
                             ui.label(rt);
                         }
-                        // Local echo : en mode piloté par le serveur, seul le curseur
-                        // est affiché (le shell distant gère le buffer et l'affichage).
+                        // Local echo : en mode piloté par le serveur on affiche les
+                        // caractères tapés depuis la dernière réponse serveur (écho
+                        // immédiat, effacé dès que le serveur confirme via feed()).
                         let echo = if state.server_managed {
-                            "█".to_string()
+                            format!("{}█", state.server_mode_echo)
                         } else {
                             format!("{}█", state.input)
                         };
@@ -847,21 +865,27 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
                     .frame(false)
                     .text_color(Color32::TRANSPARENT),
             );
-            // Le terminal prend le focus seulement si :
-            //   1. Aucun dialogue modal n'est ouvert.
-            //   2. Aucun autre widget n'a le focus clavier (barre de recherche,
-            //      explorateur de fichiers, champs de formulaire, etc.).
-            // Cela garantit que chaque widget ne capture que ce qu'il doit.
+            // Gestion du focus :
+            // - En mode server_managed : on force toujours le focus sur le terminal.
+            //   egui peut avoir déplacé le focus suite au Tab (traversée de focus GUI) ;
+            //   on le récupère immédiatement pour que les touches suivantes soient capturées.
+            // - En mode local : on ne vole le focus que si aucun autre widget ne l'a
+            //   (pour ne pas interrompre les champs de formulaire, l'explorateur, etc.).
             if !modal_open {
-                let another_widget_has_focus = ui.ctx().memory(|m| {
-                    m.focused().is_some_and(|id| id != response.id)
-                });
-                if !another_widget_has_focus && !response.has_focus() {
+                if state.server_managed {
                     response.request_focus();
+                } else {
+                    let another_widget_has_focus = ui.ctx().memory(|m| {
+                        m.focused().is_some_and(|id| id != response.id)
+                    });
+                    if !another_widget_has_focus && !response.has_focus() {
+                        response.request_focus();
+                    }
                 }
             }
-            // Mémorise l'état de focus pour la frame suivante (utilisé par les handlers de touches).
-            state.input_focused = response.has_focus();
+            // En mode server_managed, input_focused est forcé à true même si egui
+            // a momentanément déplacé le focus, pour que terminal_active reste vrai.
+            state.input_focused = response.has_focus() || state.server_managed;
 
             // Entrée validée → envoie la ligne au serveur (avec \n) et vide le champ.
             // (Cas dropdown déjà traité avant le Frame par consume_key.)
