@@ -11,7 +11,7 @@ pub mod tab_bar;
 pub mod terminal;
 
 use crate::app::{apply_theme, setup_fonts, BetterSshApp, ScanConnectDialog};
-use crate::config::{AuthMethod, ConnectionProfile, Vault};
+use crate::config::{AuthMethod, ConnectionProfile, MasterKeyCheck, Vault};
 use crate::ssh::session::SftpCommand;
 use crate::ui::file_explorer::SftpRequest;
 use crate::ui::icons as ph;
@@ -263,6 +263,7 @@ fn render_modals(app: &mut BetterSshApp, ctx: &Context) {
                 vault_password_loaded,
                 is_new: existing.is_none(),
                 existing_profile_id,
+                vault_error: None,
             });
         }
     }
@@ -640,11 +641,20 @@ fn render_scan_connect_dialog(app: &mut BetterSshApp, ctx: &Context) {
                                     ui.label(
                                         egui::RichText::new(format!("{} Vault verrouillé", ph::LOCK)).small().weak(),
                                     );
-                                    ui.add(
+                                    if ui.add(
                                         egui::TextEdit::singleline(&mut dlg.vault_key_input)
                                             .password(true)
                                             .hint_text("Clé maître du vault (laisser vide = ne pas sauvegarder)"),
-                                    );
+                                    ).changed() {
+                                        dlg.vault_error = None;
+                                    }
+                                    if let Some(err) = &dlg.vault_error.clone() {
+                                        ui.label(
+                                            egui::RichText::new(format!("{} {err}", ph::WARNING))
+                                                .color(egui::Color32::from_rgb(220, 70, 70))
+                                                .small(),
+                                        );
+                                    }
                                 }
                             });
                             ui.end_row();
@@ -710,7 +720,14 @@ fn render_scan_connect_dialog(app: &mut BetterSshApp, ctx: &Context) {
     if do_connect {
         // ── 1. Déverrouiller ou créer le vault si une clé a été saisie ────────
         if app.vault.is_none() && !dlg.vault_key_input.is_empty() {
-            app.vault = Some(Vault::new(dlg.vault_key_input.clone()));
+            let vault = Vault::new(dlg.vault_key_input.clone());
+            if matches!(vault.master_key_ok(), Ok(MasterKeyCheck::Wrong)) {
+                dlg.vault_error = Some("Mot de passe vault incorrect.".into());
+                app.pending_scan_connect = Some(dlg);
+                return;
+            }
+            dlg.vault_error = None;
+            app.vault = Some(vault);
         }
 
         // ── 2. Construire ou mettre à jour le profil ──────────────────────────
