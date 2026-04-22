@@ -27,7 +27,9 @@ russh-sftp = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
-age = { version = "0.10", features = ["async", "armor"] }
+age = { version = "0.10" }
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
 shellexpand = "3"
 anyhow = "1"
 thiserror = "1"
@@ -46,6 +48,9 @@ secrecy = { version = "0.8", features = ["serde"] }
 zeroize = "1"
 crossbeam-channel = "0.5"
 image = { version = "0.25", features = ["png"] }
+
+[dev-dependencies]
+tempfile = "3"
 
 [target.'cfg(windows)'.build-dependencies]
 winres = "0.1"
