@@ -69,9 +69,10 @@ pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
 
     // ── Liste des profils filtrée ─────────────────────────────────────────────
     let search = app.sidebar.search.to_lowercase();
-    let mut to_open: Option<usize> = None;
-    let mut to_edit: Option<usize> = None;
-    let mut to_delete: Option<usize> = None;
+    let mut to_open:           Option<usize> = None;
+    let mut to_connect_direct: Option<usize> = None;
+    let mut to_edit:           Option<usize> = None;
+    let mut to_delete:         Option<usize> = None;
 
     egui::ScrollArea::vertical().show(ui, |ui| {
         // Filtre les profils selon la recherche (nom, hôte, tags).
@@ -104,9 +105,9 @@ pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
                 format!("{}@{}:{}", profile.username, profile.host, profile.port)
             };
             let hover = if vault_locked {
-                format!("{} Vault verrouillé — déverrouillez pour voir l'hôte\nDouble-clic pour connecter", ph::LOCK)
+                format!("{} Vault verrouillé — déverrouillez pour voir l'hôte\nDouble-clic ou clic droit → Connecter", ph::LOCK)
             } else {
-                format!("{}@{}:{}\nDouble-clic pour connecter", profile.username, profile.host, profile.port)
+                format!("{}@{}:{}\nDouble-clic ou clic droit → Connecter", profile.username, profile.host, profile.port)
             };
             let tags = profile.tags.clone();
 
@@ -120,6 +121,25 @@ pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
                                 format!("{indicator} {session_name}"),
                             );
                             if resp.double_clicked() { to_open = Some(i); }
+                            // Menu contextuel (clic droit) sur la ligne du profil.
+                            resp.context_menu(|ui| {
+                                if ui.button(format!("{} Connecter", ph::PLUG)).clicked() {
+                                    to_connect_direct = Some(i);
+                                    ui.close_menu();
+                                }
+                                ui.separator();
+                                if ui.button(format!("{} Modifier", ph::PENCIL)).clicked() {
+                                    to_edit = Some(i);
+                                    ui.close_menu();
+                                }
+                                if ui.button(
+                                    egui::RichText::new(format!("{} Supprimer", ph::TRASH))
+                                        .color(egui::Color32::from_rgb(220, 70, 70))
+                                ).clicked() {
+                                    to_delete = Some(i);
+                                    ui.close_menu();
+                                }
+                            });
                             resp.on_hover_text(&hover);
                             // Détails user@host:port ou indication vault verrouillé.
                             let detail_color = if vault_locked {
@@ -190,6 +210,52 @@ pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
             app.sidebar.vault_key_input.clear();
             app.sidebar.edit_profile = Some(profile);
             app.sidebar.show_new_profile = true;
+        }
+    }
+    if let Some(i) = to_connect_direct {
+        let profile_id = app.sidebar.profiles[i].id.clone();
+
+        // Déjà connecté → bascule sur l'onglet existant.
+        if let Some(tab_idx) = app.tabs.iter().position(|t| t.profile.id == profile_id && t.connected) {
+            app.active_tab = tab_idx;
+        } else if app.vault.is_none() && Vault::profile_has_encrypted_data(&profile_id) {
+            // Vault verrouillé et profil chiffré → affiche le dialogue de déverrouillage.
+            // L'utilisateur devra entrer la clé vault, puis la connexion se fera.
+            app.sidebar.pending_password.clear();
+            app.sidebar.vault_password_loaded = false;
+            app.sidebar.vault_key_input.clear();
+            app.sidebar.edit_profile = Some(app.sidebar.profiles[i].clone());
+            app.sidebar.show_new_profile = true;
+        } else {
+            // Vault déverrouillé (ou aucune donnée chiffrée) → connexion directe.
+            let mut profile = app.sidebar.profiles[i].clone();
+
+            // Lecture groupée : adresse, utilisateur, mot de passe (1 seule I/O vault).
+            let (addr, user, vault_pw) = if let Some(vault) = &app.vault {
+                vault.get_profile(&profile.id).unwrap_or_default()
+            } else {
+                (None, None, None)
+            };
+            if profile.host.is_empty()     { profile.host     = addr.unwrap_or_default(); }
+            if profile.username.is_empty() { profile.username = user.unwrap_or_default(); }
+
+            let pw = if matches!(profile.auth_method, AuthMethod::Password) {
+                vault_pw
+            } else {
+                None
+            };
+
+            // Si auth Password sans mot de passe disponible → dialogue pour le saisir.
+            if matches!(profile.auth_method, AuthMethod::Password) && pw.is_none() {
+                app.sidebar.pending_password.clear();
+                app.sidebar.vault_password_loaded = false;
+                app.sidebar.vault_key_input.clear();
+                app.sidebar.edit_profile = Some(profile);
+                app.sidebar.show_new_profile = true;
+            } else {
+                // Connexion immédiate sans afficher le formulaire.
+                app.open_profile(profile, pw);
+            }
         }
     }
     if let Some(i) = to_edit {
