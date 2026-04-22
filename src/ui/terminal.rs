@@ -93,6 +93,12 @@ pub struct TerminalState {
     /// Levé à true quand une commande est ajoutée à session_history.
     /// L'app lit ce flag pour sauvegarder l'historique dans le vault chiffré.
     pub pending_history_save: bool,
+    /// Demande de déplacement du curseur TextEdit en fin de texte.
+    /// Levé après toute modification programmatique de `input` (navigation historique).
+    cursor_to_end: bool,
+    /// Position du curseur en caractères Unicode dans `input` (0 = début).
+    /// Mise à jour chaque frame après rendu du TextEdit ; utilisée pour l'affichage.
+    cursor_char_pos: usize,
 
     // ── État interne du parseur ANSI ────────────────────────────────────────
     /// Octets reçus mais pas encore parsés (séquences incomplètes).
@@ -125,6 +131,8 @@ impl TerminalState {
             server_managed: false,
             server_mode_echo: String::new(),
             pending_history_save: false,
+            cursor_to_end: false,
+            cursor_char_pos: 0,
             ansi_buf: Vec::new(),
             current_fg: Color32::from_rgb(204, 204, 204),
             current_bg: None,
@@ -654,7 +662,6 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
                 if hist_len > 0 {
                     let next = match state.history_nav_idx {
                         None => {
-                            // Première navigation : sauvegarder la saisie courante.
                             state.history_nav_saved = state.input.clone();
                             0
                         }
@@ -662,22 +669,24 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
                     };
                     state.history_nav_idx = Some(next);
                     state.input = state.session_history[next].clone();
+                    state.cursor_to_end = true;
                 }
                 state.show_history_dropdown = false;
             }
 
-            // Flèche Bas : avance vers le présent, ou restaure la saisie d'origine.
             if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowDown)) {
                 match state.history_nav_idx {
-                    None => {} // déjà à la saisie courante
+                    None => {}
                     Some(0) => {
                         state.history_nav_idx = None;
                         state.input = std::mem::take(&mut state.history_nav_saved);
+                        state.cursor_to_end = true;
                     }
                     Some(n) => {
                         let prev = n - 1;
                         state.history_nav_idx = Some(prev);
                         state.input = state.session_history[prev].clone();
+                        state.cursor_to_end = true;
                     }
                 }
                 state.show_history_dropdown = false;
@@ -920,6 +929,19 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
                     .frame(false)
                     .text_color(Color32::TRANSPARENT),
             );
+
+            // Repositionne le curseur interne du TextEdit en fin de texte
+            // après toute modification programmatique (sélection depuis l'historique).
+            if state.cursor_to_end {
+                state.cursor_to_end = false;
+                let char_count = state.input.chars().count();
+                let mut te_state = egui::TextEdit::load_state(ui.ctx(), response.id)
+                    .unwrap_or_default();
+                te_state.cursor.set_char_range(Some(egui::text::CCursorRange::one(
+                    egui::text::CCursor::new(char_count),
+                )));
+                egui::TextEdit::store_state(ui.ctx(), response.id, te_state);
+            }
             // Gestion du focus :
             // - En mode server_managed : on force toujours le focus sur le terminal.
             //   egui peut avoir déplacé le focus suite au Tab (traversée de focus GUI) ;
