@@ -259,6 +259,12 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
     let mut pending_password = app.sidebar.pending_password.clone();
     let mut vault_key_input  = app.sidebar.vault_key_input.clone();
     let mut action = DialogAction::None;
+    // true si un des boutons/champs "Déverrouiller" a été activé ce frame.
+    // Le traitement s'effectue après la fermeture de la fenêtre pour éviter
+    // les conflits de borrow sur `profile` et `pending_password`.
+    let mut pending_unlock = false;
+    // Passe le focus au champ suivant dans la séquence clavier du formulaire.
+    let mut focus_next = false;
 
     let title = if profile.name.is_empty() { "Nouvelle connexion" } else { "Modifier le profil" };
     // true si ce profil a des données chiffrées dans vault.toml et que le vault est verrouillé.
@@ -292,50 +298,24 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     ui.label("Clé vault :");
-                    if ui.add(
+                    let resp = ui.add(
                         egui::TextEdit::singleline(&mut vault_key_input)
                             .password(true)
                             .hint_text("Clé maître du vault")
                             .desired_width(200.0),
-                    ).changed() {
-                        app.sidebar.vault_error = None;
+                    );
+                    if resp.changed() { app.sidebar.vault_error = None; }
+                    // Entrée = Déverrouiller (même comportement que le bouton).
+                    if enter_in(&resp, ui) && !vault_key_input.is_empty() {
+                        pending_unlock = true;
                     }
                     let can_unlock = !vault_key_input.is_empty();
-                    if ui.add_enabled(can_unlock, egui::Button::new(format!("{} Déverrouiller", ph::LOCK_OPEN))).clicked() {
-                        let vault = Vault::new(vault_key_input.clone());
-                        match vault.master_key_ok() {
-                            Ok(MasterKeyCheck::Wrong) => {
-                                app.sidebar.vault_error = Some("Mot de passe incorrect.".into());
-                            }
-                            _ => {
-                                app.sidebar.vault_error = None;
-                                // Migration v1→v2 si nécessaire (opération rapide après le unlock).
-                                if let Err(e) = vault.migrate_if_needed() {
-                                    log::warn!("Migration vault : {e}");
-                                }
-                                // Lecture groupée en une seule I/O.
-                                if let Ok((addr, user, pw)) = vault.get_profile(&profile.id) {
-                                    if profile.host.is_empty() {
-                                        profile.host = addr.unwrap_or_default();
-                                    }
-                                    if profile.username.is_empty() {
-                                        profile.username = user.unwrap_or_default();
-                                    }
-                                    if profile.auth_method == AuthMethod::Password {
-                                        if let Some(p) = pw {
-                                            pending_password = p;
-                                            app.sidebar.vault_password_loaded = true;
-                                        }
-                                    }
-                                }
-                                app.vault = Some(vault);
-                                app.hydrate_profiles_from_vault();
-                                vault_key_input.clear();
-                            }
-                        }
+                    if ui.add_enabled(can_unlock, egui::Button::new(
+                        format!("{} Déverrouiller", ph::LOCK_OPEN)
+                    )).clicked() {
+                        pending_unlock = true;
                     }
                 });
-                // Affiche l'erreur de mot de passe incorrect si présente.
                 if let Some(err) = &app.sidebar.vault_error.clone() {
                     ui.label(
                         egui::RichText::new(format!("{} {err}", ph::WARNING))
@@ -356,19 +336,22 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                     .spacing([8.0, 8.0])
                     .show(ui, |ui| {
                         ui.label("Nom :");
-                        ui.text_edit_singleline(&mut profile.name)
+                        let resp = ui.text_edit_singleline(&mut profile.name)
                             .on_hover_text("Nom affiché dans la barre latérale");
+                        // Entrée → passe au champ Hôte.
+                        if focus_next { resp.request_focus(); focus_next = false; }
+                        if enter_in(&resp, ui) { focus_next = true; }
                         ui.end_row();
 
                         ui.label("Hôte (IP) :");
                         ui.vertical(|ui| {
-                            ui.add(
+                            let resp = ui.add(
                                 egui::TextEdit::singleline(&mut profile.host)
                                     .hint_text("Adresse IP ou nom DNS"),
                             ).on_hover_text("Adresse IP ou nom DNS");
-                            // Avertissement si le champ est vide alors que le vault est ouvert.
-                            // Cela arrive pour les profils créés avant le chiffrement de l'hôte,
-                            // ou via le scan réseau sans vault actif.
+                            if focus_next { resp.request_focus(); focus_next = false; }
+                            // Entrée → passe au champ Port.
+                            if enter_in(&resp, ui) { focus_next = true; }
                             if profile.host.is_empty() {
                                 ui.label(
                                     egui::RichText::new(format!("{} Adresse manquante — à renseigner", ph::WARNING))
@@ -381,18 +364,32 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
 
                         ui.label("Port :");
                         let mut port_str = profile.port.to_string();
-                        if ui.add(
+                        let resp = ui.add(
                             egui::TextEdit::singleline(&mut port_str).desired_width(60.0)
-                        ).changed() {
+                        );
+                        if focus_next { resp.request_focus(); focus_next = false; }
+                        if resp.changed() { profile.port = port_str.parse().unwrap_or(22); }
+                        // Entrée → parse le port ET passe au champ Utilisateur.
+                        if enter_in(&resp, ui) {
                             profile.port = port_str.parse().unwrap_or(22);
+                            focus_next = true;
                         }
                         ui.end_row();
 
                         ui.label("Utilisateur :");
-                        ui.add(
+                        let resp = ui.add(
                             egui::TextEdit::singleline(&mut profile.username)
                                 .hint_text("Nom d'utilisateur SSH"),
                         );
+                        if focus_next { resp.request_focus(); focus_next = false; }
+                        // Entrée → mot de passe si auth Password, sinon Connecter.
+                        if enter_in(&resp, ui) {
+                            if profile.auth_method == AuthMethod::Password {
+                                focus_next = true;
+                            } else {
+                                action = DialogAction::Connect;
+                            }
+                        }
                         ui.end_row();
 
                         ui.label("Authentification :");
@@ -429,7 +426,7 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                                             .color(egui::Color32::from_rgb(80, 200, 80)),
                                     );
                                 }
-                                ui.add(
+                                let resp = ui.add(
                                     egui::TextEdit::singleline(&mut pending_password)
                                         .password(true)
                                         .hint_text(if app.sidebar.vault_password_loaded {
@@ -438,6 +435,9 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                                             "Mot de passe SSH"
                                         }),
                                 );
+                                if focus_next { resp.request_focus(); focus_next = false; }
+                                // Entrée dans le dernier champ → Connecter.
+                                if enter_in(&resp, ui) { action = DialogAction::Connect; }
                             });
                             ui.end_row();
                         }
@@ -466,45 +466,21 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                                         .weak(),
                                 );
                                 ui.horizontal(|ui| {
-                                    if ui.add(
+                                    let resp = ui.add(
                                         egui::TextEdit::singleline(&mut vault_key_input)
                                             .password(true)
                                             .hint_text("Clé maître du vault")
                                             .desired_width(160.0),
-                                    ).changed() {
-                                        app.sidebar.vault_error = None;
+                                    );
+                                    if resp.changed() { app.sidebar.vault_error = None; }
+                                    if enter_in(&resp, ui) && !vault_key_input.is_empty() {
+                                        pending_unlock = true;
                                     }
                                     let can_unlock = !vault_key_input.is_empty();
-                                    if ui.add_enabled(can_unlock, egui::Button::new(format!("{} Déverrouiller", ph::LOCK_OPEN))).clicked() {
-                                        let vault = Vault::new(vault_key_input.clone());
-                                        match vault.master_key_ok() {
-                                            Ok(MasterKeyCheck::Wrong) => {
-                                                app.sidebar.vault_error = Some("Mot de passe incorrect.".into());
-                                            }
-                                            _ => {
-                                                app.sidebar.vault_error = None;
-                                                if let Err(e) = vault.migrate_if_needed() {
-                                                    log::warn!("Migration vault : {e}");
-                                                }
-                                                if let Ok((addr, user, pw)) = vault.get_profile(&profile.id) {
-                                                    if profile.host.is_empty() {
-                                                        profile.host = addr.unwrap_or_default();
-                                                    }
-                                                    if profile.username.is_empty() {
-                                                        profile.username = user.unwrap_or_default();
-                                                    }
-                                                    if profile.auth_method == AuthMethod::Password {
-                                                        if let Some(p) = pw {
-                                                            pending_password = p;
-                                                            app.sidebar.vault_password_loaded = true;
-                                                        }
-                                                    }
-                                                }
-                                                app.vault = Some(vault);
-                                                app.hydrate_profiles_from_vault();
-                                                vault_key_input.clear();
-                                            }
-                                        }
+                                    if ui.add_enabled(can_unlock, egui::Button::new(
+                                        format!("{} Déverrouiller", ph::LOCK_OPEN)
+                                    )).clicked() {
+                                        pending_unlock = true;
                                     }
                                     if let Some(err) = &app.sidebar.vault_error.clone() {
                                         ui.label(
@@ -577,6 +553,37 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                 });
             }
         });
+
+    // ── Traitement du déverrouillage vault (bouton OU touche Entrée) ─────────
+    // S'exécute AVANT le writeback pour que les modifications de `profile` et
+    // `pending_password` soient incluses dans app.sidebar.edit_profile.
+    if pending_unlock && !vault_key_input.is_empty() {
+        let vault = Vault::new(vault_key_input.clone());
+        match vault.master_key_ok() {
+            Ok(MasterKeyCheck::Wrong) => {
+                app.sidebar.vault_error = Some("Mot de passe incorrect.".into());
+            }
+            _ => {
+                app.sidebar.vault_error = None;
+                if let Err(e) = vault.migrate_if_needed() {
+                    log::warn!("Migration vault : {e}");
+                }
+                if let Ok((addr, user, pw)) = vault.get_profile(&profile.id) {
+                    if profile.host.is_empty()     { profile.host     = addr.unwrap_or_default(); }
+                    if profile.username.is_empty() { profile.username = user.unwrap_or_default(); }
+                    if profile.auth_method == AuthMethod::Password {
+                        if let Some(p) = pw {
+                            pending_password = p;
+                            app.sidebar.vault_password_loaded = true;
+                        }
+                    }
+                }
+                app.vault = Some(vault);
+                app.hydrate_profiles_from_vault();
+                vault_key_input.clear();
+            }
+        }
+    }
 
     // Réécriture des clones édités dans l'état de la sidebar.
     app.sidebar.edit_profile    = Some(profile.clone());
@@ -677,4 +684,10 @@ fn upsert_profile(profiles: &mut Vec<ConnectionProfile>, profile: ConnectionProf
         Some(i) => profiles[i] = profile,
         None    => profiles.push(profile),
     }
+}
+
+/// Retourne true si le champ TextEdit a perdu le focus via la touche Entrée.
+/// Utilisé pour la navigation clavier dans le formulaire de profil.
+fn enter_in(resp: &egui::Response, ui: &egui::Ui) -> bool {
+    resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
 }
