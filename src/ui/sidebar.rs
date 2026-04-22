@@ -309,18 +309,23 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                             }
                             _ => {
                                 app.sidebar.vault_error = None;
-                                if profile.host.is_empty() {
-                                    profile.host = vault.get_address(&profile.id)
-                                        .ok().flatten().unwrap_or_default();
+                                // Migration v1→v2 si nécessaire (opération rapide après le unlock).
+                                if let Err(e) = vault.migrate_if_needed() {
+                                    log::warn!("Migration vault : {e}");
                                 }
-                                if profile.username.is_empty() {
-                                    profile.username = vault.get_username(&profile.id)
-                                        .ok().flatten().unwrap_or_default();
-                                }
-                                if profile.auth_method == AuthMethod::Password {
-                                    if let Ok(Some(pw)) = vault.get_password(&profile.id) {
-                                        pending_password = pw;
-                                        app.sidebar.vault_password_loaded = true;
+                                // Lecture groupée en une seule I/O.
+                                if let Ok((addr, user, pw)) = vault.get_profile(&profile.id) {
+                                    if profile.host.is_empty() {
+                                        profile.host = addr.unwrap_or_default();
+                                    }
+                                    if profile.username.is_empty() {
+                                        profile.username = user.unwrap_or_default();
+                                    }
+                                    if profile.auth_method == AuthMethod::Password {
+                                        if let Some(p) = pw {
+                                            pending_password = p;
+                                            app.sidebar.vault_password_loaded = true;
+                                        }
                                     }
                                 }
                                 app.vault = Some(vault);
@@ -478,18 +483,21 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                                             }
                                             _ => {
                                                 app.sidebar.vault_error = None;
-                                                if profile.host.is_empty() {
-                                                    profile.host = vault.get_address(&profile.id)
-                                                        .ok().flatten().unwrap_or_default();
+                                                if let Err(e) = vault.migrate_if_needed() {
+                                                    log::warn!("Migration vault : {e}");
                                                 }
-                                                if profile.username.is_empty() {
-                                                    profile.username = vault.get_username(&profile.id)
-                                                        .ok().flatten().unwrap_or_default();
-                                                }
-                                                if profile.auth_method == AuthMethod::Password {
-                                                    if let Ok(Some(pw)) = vault.get_password(&profile.id) {
-                                                        pending_password = pw;
-                                                        app.sidebar.vault_password_loaded = true;
+                                                if let Ok((addr, user, pw)) = vault.get_profile(&profile.id) {
+                                                    if profile.host.is_empty() {
+                                                        profile.host = addr.unwrap_or_default();
+                                                    }
+                                                    if profile.username.is_empty() {
+                                                        profile.username = user.unwrap_or_default();
+                                                    }
+                                                    if profile.auth_method == AuthMethod::Password {
+                                                        if let Some(p) = pw {
+                                                            pending_password = p;
+                                                            app.sidebar.vault_password_loaded = true;
+                                                        }
                                                     }
                                                 }
                                                 app.vault = Some(vault);
@@ -578,27 +586,24 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
     // Application de l'action choisie (hors closure pour éviter les conflits de borrow).
     match action {
         DialogAction::Save => {
-            // Déverrouille le vault si une clé vient d'être saisie.
             if app.vault.is_none() && !app.sidebar.vault_key_input.is_empty() {
                 app.vault = Some(Vault::new(app.sidebar.vault_key_input.clone()));
                 app.hydrate_profiles_from_vault();
             }
-            // Chiffre et sauvegarde hôte, utilisateur et mot de passe dans le vault.
+            // Une seule écriture disque pour les trois champs (rapide avec ChaCha20).
             if let Some(vault) = &app.vault {
-                if !profile.host.is_empty() {
-                    if let Err(e) = vault.store_address(&profile.id, &profile.host) {
-                        log::error!("Impossible de sauvegarder l'hôte dans le vault : {e}");
-                    }
-                }
-                if !profile.username.is_empty() {
-                    if let Err(e) = vault.store_username(&profile.id, &profile.username) {
-                        log::error!("Impossible de sauvegarder l'utilisateur dans le vault : {e}");
-                    }
-                }
-                if !app.sidebar.pending_password.is_empty() {
-                    if let Err(e) = vault.store_password(&profile.id, &app.sidebar.pending_password) {
-                        log::error!("Impossible de sauvegarder le mot de passe dans le vault : {e}");
-                    }
+                let pw = if app.sidebar.pending_password.is_empty() {
+                    None
+                } else {
+                    Some(app.sidebar.pending_password.as_str())
+                };
+                if let Err(e) = vault.store_profile(
+                    &profile.id,
+                    if profile.host.is_empty()     { None } else { Some(&profile.host) },
+                    if profile.username.is_empty() { None } else { Some(&profile.username) },
+                    pw,
+                ) {
+                    log::error!("Impossible de sauvegarder dans le vault : {e}");
                 }
             }
             upsert_profile(&mut app.sidebar.profiles, profile);
@@ -610,52 +615,43 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
             app.sidebar.show_new_profile = false;
         }
         DialogAction::Connect => {
-            // Déverrouille le vault si une clé vient d'être saisie.
             if app.vault.is_none() && !app.sidebar.vault_key_input.is_empty() {
                 app.vault = Some(Vault::new(app.sidebar.vault_key_input.clone()));
                 app.hydrate_profiles_from_vault();
             }
-            // Chiffre et sauvegarde hôte, utilisateur et mot de passe dans le vault.
-            if let Some(vault) = &app.vault {
-                if !profile.host.is_empty() {
-                    if let Err(e) = vault.store_address(&profile.id, &profile.host) {
-                        log::error!("Impossible de sauvegarder l'hôte dans le vault : {e}");
-                    }
-                }
-                if !profile.username.is_empty() {
-                    if let Err(e) = vault.store_username(&profile.id, &profile.username) {
-                        log::error!("Impossible de sauvegarder l'utilisateur dans le vault : {e}");
-                    }
-                }
-            }
-            upsert_profile(&mut app.sidebar.profiles, profile.clone());
-            app.save_config();
 
-            // Re-hydrate hôte/utilisateur depuis le vault si toujours vides.
-            if let Some(vault) = &app.vault {
-                if profile.host.is_empty() {
-                    profile.host = vault.get_address(&profile.id).ok().flatten().unwrap_or_default();
-                }
-                if profile.username.is_empty() {
-                    profile.username = vault.get_username(&profile.id).ok().flatten().unwrap_or_default();
-                }
-            }
-
+            // Détermine le mot de passe à utiliser pour la session.
             let pw = if !app.sidebar.pending_password.is_empty() {
-                // Nouveau mot de passe saisi → le stocker dans le vault si disponible.
-                if let Some(vault) = &app.vault {
-                    if let Err(e) = vault.store_password(&profile.id, &app.sidebar.pending_password) {
-                        log::error!("Impossible de sauvegarder le mot de passe dans le vault : {e}");
-                    }
-                }
                 Some(app.sidebar.pending_password.clone())
             } else if app.sidebar.vault_password_loaded {
-                // Mot de passe vide mais pré-chargé du vault → le recharger pour la session.
-                app.vault.as_ref()
-                    .and_then(|v| v.get_password(&profile.id).ok().flatten())
+                app.vault.as_ref().and_then(|v| v.get_password(&profile.id).ok().flatten())
             } else {
                 None
             };
+
+            // Une seule écriture disque pour hôte, utilisateur et mot de passe éventuel.
+            if let Some(vault) = &app.vault {
+                let pw_to_store = pw.as_deref().filter(|_| !app.sidebar.vault_password_loaded
+                    || !app.sidebar.pending_password.is_empty());
+                if let Err(e) = vault.store_profile(
+                    &profile.id,
+                    if profile.host.is_empty()     { None } else { Some(&profile.host) },
+                    if profile.username.is_empty() { None } else { Some(&profile.username) },
+                    pw_to_store,
+                ) {
+                    log::error!("Impossible de sauvegarder dans le vault : {e}");
+                }
+                // Re-hydrate depuis le vault si les champs sont encore vides.
+                if profile.host.is_empty() || profile.username.is_empty() {
+                    if let Ok((addr, user, _)) = vault.get_profile(&profile.id) {
+                        if profile.host.is_empty()     { profile.host     = addr.unwrap_or_default(); }
+                        if profile.username.is_empty() { profile.username = user.unwrap_or_default(); }
+                    }
+                }
+            }
+
+            upsert_profile(&mut app.sidebar.profiles, profile.clone());
+            app.save_config();
 
             app.open_profile(profile, pw);
             app.sidebar.edit_profile = None;
