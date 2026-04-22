@@ -802,16 +802,37 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
                         // Local echo : en mode piloté par le serveur on affiche les
                         // caractères tapés depuis la dernière réponse serveur (écho
                         // immédiat, effacé dès que le serveur confirme via feed()).
-                        let echo = if state.server_managed {
-                            format!("{}█", state.server_mode_echo)
+                        if state.server_managed {
+                            ui.label(
+                                egui::RichText::new(format!("{}█", state.server_mode_echo))
+                                    .font(font_id.clone())
+                                    .color(Color32::WHITE),
+                            );
                         } else {
-                            format!("{}█", state.input)
-                        };
-                        ui.label(
-                            egui::RichText::new(echo)
-                                .font(font_id.clone())
-                                .color(Color32::WHITE),
-                        );
+                            let chars: Vec<char> = state.input.chars().collect();
+                            let pos = state.cursor_char_pos.min(chars.len());
+                            let before: String = chars[..pos].iter().collect();
+                            let after: String = chars[pos..].iter().collect();
+                            if !before.is_empty() {
+                                ui.label(
+                                    egui::RichText::new(before)
+                                        .font(font_id.clone())
+                                        .color(Color32::WHITE),
+                                );
+                            }
+                            ui.label(
+                                egui::RichText::new("█")
+                                    .font(font_id.clone())
+                                    .color(Color32::WHITE),
+                            );
+                            if !after.is_empty() {
+                                ui.label(
+                                    egui::RichText::new(after)
+                                        .font(font_id.clone())
+                                        .color(Color32::from_rgb(180, 180, 180)),
+                                );
+                            }
+                        }
                     });
                 });
 
@@ -941,6 +962,14 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
                     egui::text::CCursor::new(char_count),
                 )));
                 egui::TextEdit::store_state(ui.ctx(), response.id, te_state);
+                state.cursor_char_pos = char_count;
+            }
+
+            // Lit la position réelle du curseur TextEdit pour synchroniser l'affichage.
+            if let Some(te_state) = egui::TextEdit::load_state(ui.ctx(), response.id) {
+                if let Some(range) = te_state.cursor.char_range() {
+                    state.cursor_char_pos = range.primary.index;
+                }
             }
             // Gestion du focus :
             // - En mode server_managed : on force toujours le focus sur le terminal.
