@@ -15,6 +15,16 @@ use crate::ui::{
 };
 use egui::{Context, FontId, TextStyle};
 
+#[derive(Clone, Debug)]
+pub enum LangRepoStatus {
+    Idle,
+    Loading,
+    Offline,
+    Error(String),
+    Downloading(String),
+    Installed(String),
+}
+
 // ─── Dialogue de connexion depuis le scan réseau ──────────────────────────────
 
 /// État du dialogue affiché quand l'utilisateur clique "Connecter" dans le scan.
@@ -122,10 +132,18 @@ pub struct BetterSshApp {
     pub lang_chosen: String,
     /// Liste des langues disponibles (embarquées + sur disque).
     pub lang_files: Vec<LangFile>,
+    /// Liste des fichiers de langue présents localement sur disque.
+    pub local_lang_files: Vec<LangFile>,
+    /// Liste des langues trouvées sur GitHub.
+    pub remote_lang_files: Vec<LangFile>,
     /// true = fenêtre de sélection de langue visible.
     pub show_lang_window: bool,
     /// Canal de réception d'un téléchargement de langue en arrière-plan.
-    pub lang_download_rx: Option<crossbeam_channel::Receiver<(String, String)>>,
+    pub lang_download_rx: Option<crossbeam_channel::Receiver<anyhow::Result<(String, String)>>>,
+    /// Canal de réception de l'inventaire GitHub.
+    pub lang_remote_rx: Option<crossbeam_channel::Receiver<anyhow::Result<Vec<LangFile>>>>,
+    /// État réseau / dépôt de la fenêtre de langue.
+    pub lang_repo_status: LangRepoStatus,
 }
 
 impl BetterSshApp {
@@ -143,6 +161,7 @@ impl BetterSshApp {
         let work_dir = crate::i18n::detect_work_dir();
         let (lang, lang_chosen) = crate::i18n::load_lang(&work_dir);
         let lang_files = crate::i18n::list_lang_files(&work_dir);
+        let local_lang_files = crate::i18n::list_local_lang_files(&work_dir);
 
         Self {
             sidebar: SidebarState::new(config.profiles.clone()),
@@ -163,8 +182,12 @@ impl BetterSshApp {
             work_dir,
             lang_chosen,
             lang_files,
+            local_lang_files,
+            remote_lang_files: Vec::new(),
             show_lang_window: false,
             lang_download_rx: None,
+            lang_remote_rx: None,
+            lang_repo_status: LangRepoStatus::Idle,
         }
     }
 
@@ -257,6 +280,7 @@ impl eframe::App for BetterSshApp {
         // Collecte d'abord les événements SSH reçus en async depuis la dernière frame.
         poll_session_events(self);
         poll_lang_download(self);
+        poll_remote_langs(self);
         handle_keyboard_shortcuts(self, ctx);
         crate::ui::render(self, ctx);
         // Repaint régulier pour rafraîchir les données SSH qui arrivent en async.
@@ -465,12 +489,40 @@ fn poll_session_events(app: &mut BetterSshApp) {
 
 fn poll_lang_download(app: &mut BetterSshApp) {
     if let Some(rx) = &app.lang_download_rx {
-        if let Ok((stem, text)) = rx.try_recv() {
-            let lang_dir = app.work_dir.join("lang");
-            let _ = std::fs::create_dir_all(&lang_dir);
-            let _ = std::fs::write(lang_dir.join(format!("{stem}.toml")), &text);
-            app.lang_files = crate::i18n::list_lang_files(&app.work_dir);
+        if let Ok(result) = rx.try_recv() {
+            match result {
+                Ok((stem, text)) => {
+                    let lang_dir = app.work_dir.join("lang");
+                    let _ = std::fs::create_dir_all(&lang_dir);
+                    let _ = std::fs::write(lang_dir.join(format!("{stem}.toml")), &text);
+                    app.lang_files = crate::i18n::list_lang_files(&app.work_dir);
+                    app.local_lang_files = crate::i18n::list_local_lang_files(&app.work_dir);
+                    app.reload_lang(&stem);
+                    app.lang_repo_status = LangRepoStatus::Installed(stem);
+                }
+                Err(err) => {
+                    app.lang_repo_status = classify_repo_error(&err.to_string());
+                }
+            }
             app.lang_download_rx = None;
+        }
+    }
+}
+
+fn poll_remote_langs(app: &mut BetterSshApp) {
+    if let Some(rx) = &app.lang_remote_rx {
+        if let Ok(result) = rx.try_recv() {
+            match result {
+                Ok(files) => {
+                    app.remote_lang_files = files;
+                    app.lang_repo_status = LangRepoStatus::Idle;
+                }
+                Err(err) => {
+                    app.remote_lang_files.clear();
+                    app.lang_repo_status = classify_repo_error(&err.to_string());
+                }
+            }
+            app.lang_remote_rx = None;
         }
     }
 }
@@ -482,6 +534,88 @@ impl BetterSshApp {
         let (lang, chosen) = crate::i18n::load_lang(&self.work_dir);
         self.lang = lang;
         self.lang_chosen = chosen;
+        self.lang_files = crate::i18n::list_lang_files(&self.work_dir);
+        self.local_lang_files = crate::i18n::list_local_lang_files(&self.work_dir);
+    }
+
+    pub fn refresh_remote_langs(&mut self) {
+        if self.lang_remote_rx.is_some() {
+            return;
+        }
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        self.lang_repo_status = LangRepoStatus::Loading;
+        self.lang_remote_rx = Some(rx);
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::i18n::list_remote_lang_files());
+        });
+    }
+
+    pub fn download_lang_from_git(&mut self, stem: String) {
+        if self.lang_download_rx.is_some() {
+            return;
+        }
+        let work_dir = self.work_dir.clone();
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        self.lang_repo_status = LangRepoStatus::Downloading(stem.clone());
+        self.lang_download_rx = Some(rx);
+        std::thread::spawn(move || {
+            let result = crate::i18n::download_lang(&work_dir, &stem).map(|text| (stem, text));
+            let _ = tx.send(result);
+        });
+    }
+
+    pub fn install_embedded_lang(&mut self, stem: String) {
+        if self.lang_download_rx.is_some() {
+            return;
+        }
+        let work_dir = self.work_dir.clone();
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        self.lang_repo_status = LangRepoStatus::Downloading(stem.clone());
+        self.lang_download_rx = Some(rx);
+        std::thread::spawn(move || {
+            let result = crate::i18n::install_embedded_lang(&work_dir, &stem).map(|text| (stem, text));
+            let _ = tx.send(result);
+        });
+    }
+
+    pub fn select_lang(&mut self, stem: String) {
+        let is_local = self.local_lang_files.iter().any(|file| file.stem == stem);
+        if is_local {
+            self.reload_lang(&stem);
+            return;
+        }
+
+        let is_remote = self.remote_lang_files.iter().any(|file| file.stem == stem);
+        if is_remote {
+            self.download_lang_from_git(stem);
+            return;
+        }
+
+        if crate::i18n::embedded_lang(&stem).is_some() {
+            self.install_embedded_lang(stem);
+        }
+    }
+
+    pub fn ensure_remote_langs_loaded(&mut self) {
+        if self.remote_lang_files.is_empty() && self.lang_remote_rx.is_none() {
+            self.refresh_remote_langs();
+        }
+    }
+}
+
+fn classify_repo_error(message: &str) -> LangRepoStatus {
+    let lower = message.to_lowercase();
+    if lower.contains("dns")
+        || lower.contains("resolve")
+        || lower.contains("timed out")
+        || lower.contains("connection")
+        || lower.contains("network")
+        || lower.contains("os error 10060")
+        || lower.contains("os error 10061")
+    {
+        LangRepoStatus::Offline
+    } else {
+        LangRepoStatus::Error(message.to_string())
     }
 }
 

@@ -71,7 +71,7 @@ fn render_top_bar(app: &mut BetterSshApp, ctx: &Context) {
                 let lang_hint = crate::i18n::Lang::fmt_lang(
                     &app.lang.topbar_lang_hint, &app.lang_chosen,
                 );
-                if ui.button(format!("{} {}", ph::GLOBE, app.lang.lang_win_title))
+                if ui.button(ph::GLOBE)
                     .on_hover_text(lang_hint)
                     .clicked()
                 {

@@ -2,6 +2,7 @@
 /// Charge les fichiers TOML de langue depuis le répertoire de travail
 /// (ou utilise les fichiers embarqués à la compilation comme repli).
 use serde::Deserialize;
+use serde_json::Value as JsonValue;
 use std::path::PathBuf;
 
 // ─── Fichiers embarqués ───────────────────────────────────────────────────────
@@ -167,6 +168,26 @@ pub struct Lang {
     pub lang_open_btn_hint:   String,
     pub lang_badge_default:   String,
     pub lang_no_internet_msg: String,
+    pub lang_local_section:   String,
+    pub lang_remote_section:  String,
+    pub lang_refresh_btn:     String,
+    pub lang_refresh_btn_hint: String,
+    pub lang_download_btn:    String,
+    pub lang_local_badge:     String,
+    pub lang_builtin_badge:   String,
+    pub lang_downloaded_badge: String,
+    pub lang_remote_badge:    String,
+    pub lang_installed_badge: String,
+    pub lang_remote_loading:  String,
+    pub lang_remote_empty:    String,
+    pub lang_remote_error:    String,
+    pub lang_local_empty:     String,
+    pub lang_status_offline:  String,
+    pub lang_status_ready:    String,
+    pub lang_status_installing: String,
+    pub lang_status_installed: String,
+    pub lang_local_path_label: String,
+    pub lang_close_btn:       String,
 
     // Welcome screen
     pub welcome_title:     String,
@@ -209,6 +230,10 @@ pub struct LangFile {
     pub lang_code: String,
     /// true si ce fichier provient du répertoire de travail (pas de l'embarqué).
     pub from_disk: bool,
+    /// Nom réel du fichier (ex : `"FR_fr.toml"`).
+    pub file_name: String,
+    /// Chemin ou emplacement utile pour l'affichage.
+    pub location: String,
 }
 
 // ─── Détection du répertoire de travail ─────────────────────────────────────
@@ -294,7 +319,6 @@ fn read_chosen(work_dir: &PathBuf) -> Option<String> {
 
 /// Lit un fichier `.toml` depuis `{work_dir}/lang/`.
 fn read_disk_lang(work_dir: &PathBuf, stem: &str) -> Option<String> {
-    if stem == "EN_en" { return None; }
     std::fs::read_to_string(work_dir.join("lang").join(format!("{stem}.toml"))).ok()
 }
 
@@ -345,21 +369,35 @@ pub fn list_lang_files(work_dir: &PathBuf) -> Vec<LangFile> {
     // Langues embarquées
     for &stem in KNOWN_LANGS {
         if let Some(text) = embedded_lang(stem) {
-            if let Ok(val) = toml::from_str::<toml::Value>(text) {
-                let name = val.get("lang_name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(stem)
-                    .to_string();
-                let lang_code = val.get("lang_code")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                files.push(LangFile { stem: stem.to_string(), name, lang_code, from_disk: false });
+            if let Some(file) = parse_lang_toml(
+                stem.to_string(),
+                text,
+                false,
+                embedded_file_name(stem).to_string(),
+                "embedded".to_string(),
+            ) {
+                files.push(file);
             }
         }
     }
 
-    // Fichiers supplémentaires dans {work_dir}/lang/
+    // Les fichiers sur disque écrasent l'embarqué s'ils ont le même stem.
+    for disk_file in list_local_lang_files(work_dir) {
+        if let Some(pos) = files.iter().position(|f| f.stem == disk_file.stem) {
+            files[pos] = disk_file;
+        } else {
+            files.push(disk_file);
+        }
+    }
+
+    files.sort_by(|a, b| a.name.cmp(&b.name));
+    files
+}
+
+/// Liste les fichiers `.toml` réellement présents dans `{work_dir}/lang/`.
+pub fn list_local_lang_files(work_dir: &PathBuf) -> Vec<LangFile> {
+    let mut files: Vec<LangFile> = Vec::new();
+
     let lang_dir = work_dir.join("lang");
     if let Ok(entries) = std::fs::read_dir(&lang_dir) {
         for entry in entries.flatten() {
@@ -369,19 +407,17 @@ pub fn list_lang_files(work_dir: &PathBuf) -> Vec<LangFile> {
                 Some(s) if !s.ends_with(".default") => s.to_string(),
                 _ => continue,
             };
-            // Ne pas dupliquer les stems embarqués
-            if files.iter().any(|f| f.stem == stem) { continue; }
             if let Ok(text) = std::fs::read_to_string(&path) {
-                if let Ok(val) = toml::from_str::<toml::Value>(&text) {
-                    let name = val.get("lang_name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or(&stem)
-                        .to_string();
-                    let lang_code = val.get("lang_code")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    files.push(LangFile { stem, name, lang_code, from_disk: true });
+                if let Some(file_name) = path.file_name().and_then(|s| s.to_str()) {
+                    if let Some(file) = parse_lang_toml(
+                        stem,
+                        &text,
+                        true,
+                        file_name.to_string(),
+                        path.display().to_string(),
+                    ) {
+                        files.push(file);
+                    }
                 }
             }
         }
@@ -389,6 +425,47 @@ pub fn list_lang_files(work_dir: &PathBuf) -> Vec<LangFile> {
 
     files.sort_by(|a, b| a.name.cmp(&b.name));
     files
+}
+
+/// Liste les langues présentes sur GitHub.
+pub fn list_remote_lang_files() -> anyhow::Result<Vec<LangFile>> {
+    let url = "https://api.github.com/repos/rusty-suite/better_ssh/contents/lang";
+    let response = ureq::get(url)
+        .set("User-Agent", "betterssh")
+        .set("Accept", "application/vnd.github+json")
+        .timeout(std::time::Duration::from_secs(10))
+        .call()?;
+    let body = response.into_string()?;
+    let entries: Vec<JsonValue> = serde_json::from_str(&body)?;
+    let mut files = Vec::new();
+
+    for entry in entries {
+        let Some(name) = entry.get("name").and_then(|v| v.as_str()) else { continue; };
+        if !name.ends_with(".toml") { continue; }
+        let stem = name.trim_end_matches(".toml").trim_end_matches(".default").to_string();
+        let download_url = entry
+            .get("download_url")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+
+        if download_url.is_empty() {
+            continue;
+        }
+
+        let text = ureq::get(&download_url)
+            .set("User-Agent", "betterssh")
+            .timeout(std::time::Duration::from_secs(10))
+            .call()?
+            .into_string()?;
+
+        if let Some(file) = parse_lang_toml(stem, &text, false, name.to_string(), download_url) {
+            files.push(file);
+        }
+    }
+
+    files.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(files)
 }
 
 // ─── Téléchargement d'une langue depuis GitHub ───────────────────────────────
@@ -405,4 +482,46 @@ pub fn download_lang(work_dir: &PathBuf, stem: &str) -> anyhow::Result<String> {
     std::fs::create_dir_all(&lang_dir)?;
     std::fs::write(lang_dir.join(format!("{stem}.toml")), &text)?;
     Ok(text)
+}
+
+pub fn install_embedded_lang(work_dir: &PathBuf, stem: &str) -> anyhow::Result<String> {
+    let text = embedded_lang(stem)
+        .ok_or_else(|| anyhow::anyhow!("embedded language not found: {stem}"))?
+        .to_string();
+    let lang_dir = work_dir.join("lang");
+    std::fs::create_dir_all(&lang_dir)?;
+    std::fs::write(lang_dir.join(format!("{stem}.toml")), &text)?;
+    Ok(text)
+}
+
+fn parse_lang_toml(
+    stem: String,
+    text: &str,
+    from_disk: bool,
+    file_name: String,
+    location: String,
+) -> Option<LangFile> {
+    let val = toml::from_str::<toml::Value>(text).ok()?;
+    let name = val.get("lang_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&stem)
+        .to_string();
+    let lang_code = val.get("lang_code")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    Some(LangFile { stem, name, lang_code, from_disk, file_name, location })
+}
+
+fn embedded_file_name(stem: &str) -> &'static str {
+    match stem {
+        "EN_en" => "EN_en.default.toml",
+        "FR_fr" => "FR_fr.toml",
+        "CH_fr" => "CH_fr.toml",
+        "DE_de" => "DE_de.toml",
+        "CH_de" => "CH_de.toml",
+        "IT_it" => "IT_it.toml",
+        "CH_it" => "CH_it.toml",
+        _ => "unknown.toml",
+    }
 }
