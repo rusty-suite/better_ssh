@@ -22,30 +22,53 @@ pub fn render(app: &mut BetterSshApp, ctx: &Context) {
     egui::Window::new(&title)
         .open(&mut open)
         .resizable(false)
-        .fixed_size([520.0, 420.0])
+        .fixed_size([540.0, 430.0])
         .collapsible(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
-            ui.label(
-                egui::RichText::new(&app.lang.lang_active_label)
-                    .small()
-                    .weak(),
-            );
-            ui.label(egui::RichText::new(active_name).strong());
-            ui.add_space(6.0);
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(format!("{}:", app.lang.lang_active_label))
+                        .small()
+                        .weak(),
+                );
+                ui.label(egui::RichText::new(active_name).strong());
+            });
+            ui.add_space(8.0);
 
-            ui.colored_label(status_color, egui::RichText::new(status_text).small());
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("●")
+                        .color(status_color)
+                        .strong(),
+                );
+                ui.label(
+                    egui::RichText::new(status_text)
+                        .small()
+                        .color(status_color),
+                );
+            });
 
             ui.separator();
-            ui.label(
-                egui::RichText::new(&app.lang.lang_local_section)
-                    .small()
-                    .weak(),
-            );
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(format!("{}:", app.lang.lang_local_section))
+                        .small()
+                        .weak(),
+                );
+                if ui.small_button(&app.lang.lang_refresh_btn)
+                    .on_hover_text(&app.lang.lang_refresh_btn_hint)
+                    .clicked()
+                {
+                    app.refresh_remote_langs();
+                }
+            });
             ui.add_space(4.0);
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
-                .max_height(250.0)
+                .max_height(245.0)
                 .show(ui, |ui| {
                     if rows.is_empty() {
                         ui.label(
@@ -84,10 +107,12 @@ pub fn render(app: &mut BetterSshApp, ctx: &Context) {
 
                         let button = egui::SelectableLabel::new(
                             is_active,
-                            egui::RichText::new(row_text).strong_if(is_active),
+                            egui::RichText::new(row_text)
+                                .strong_if(is_active)
+                                .small(),
                         );
                         let row_resp = ui.add_sized(
-                            [ui.available_width(), 28.0],
+                            [ui.available_width(), 24.0],
                             button,
                         );
 
@@ -96,39 +121,39 @@ pub fn render(app: &mut BetterSshApp, ctx: &Context) {
                                 app.select_lang(row.stem.clone());
                             }
                         }
-
-                        ui.separator();
                     }
                 });
 
             ui.separator();
-            ui.add_space(2.0);
-            ui.label(
-                egui::RichText::new(&app.lang.lang_local_path_label)
-                    .small()
-                    .weak(),
-            );
-            ui.label(
-                egui::RichText::new(lang_dir.display().to_string())
-                    .monospace()
-                    .small(),
-            );
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(format!("{}:", app.lang.lang_local_path_label))
+                        .small()
+                        .weak(),
+                );
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(lang_dir.display().to_string())
+                            .monospace()
+                            .small()
+                            .weak(),
+                    )
+                    .truncate(),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button(&app.lang.lang_open_btn)
+                        .on_hover_text(&app.lang.lang_open_btn_hint)
+                        .clicked()
+                    {
+                        let _ = std::fs::create_dir_all(&lang_dir);
+                        open_in_explorer(&lang_dir);
+                    }
+                });
+            });
 
             ui.separator();
             ui.horizontal(|ui| {
-                if ui.button(&app.lang.lang_open_btn)
-                    .on_hover_text(&app.lang.lang_open_btn_hint)
-                    .clicked()
-                {
-                    let _ = std::fs::create_dir_all(&lang_dir);
-                    open_in_explorer(&lang_dir);
-                }
-                if ui.button(&app.lang.lang_refresh_btn)
-                    .on_hover_text(&app.lang.lang_refresh_btn_hint)
-                    .clicked()
-                {
-                    app.refresh_remote_langs();
-                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button(&app.lang.lang_close_btn).clicked() {
                         close_requested = true;
@@ -210,7 +235,7 @@ fn merged_lang_rows(app: &BetterSshApp) -> Vec<LangRow> {
 fn repo_status_line(app: &BetterSshApp) -> (String, egui::Color32) {
     match &app.lang_repo_status {
         LangRepoStatus::Idle => (
-            app.lang.lang_status_ready.clone(),
+            format!("GitHub - {} language(s) repo", app.remote_lang_files.len()),
             egui::Color32::from_rgb(120, 120, 120),
         ),
         LangRepoStatus::Loading => (
