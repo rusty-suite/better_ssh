@@ -5,6 +5,7 @@ mod app;
 mod assets;
 mod config;
 mod history;
+mod i18n;
 mod logging;
 mod network;
 mod ssh;

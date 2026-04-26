@@ -224,27 +224,40 @@ fn fmt_date(ts: u64) -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
-fn access_label(entry: &RemoteEntry, username: &str, current_uid: Option<u32>) -> String {
-    if username == "root" { return "Accès complet (root)".into(); }
+fn access_label(
+    entry: &RemoteEntry,
+    username: &str,
+    current_uid: Option<u32>,
+    lang: &crate::i18n::Lang,
+) -> String {
+    if username == "root" { return lang.fe_access_root.clone(); }
     let perm = entry.permissions.unwrap_or(0);
     let bits = if let (Some(ouid), Some(cuid)) = (entry.owner_uid, current_uid) {
         if ouid == cuid { (perm >> 6) & 7 } else { perm & 7 }
     } else { perm & 7 };
-    let mut parts = vec![];
-    if bits & 4 != 0 { parts.push("Lecture"); }
-    if bits & 2 != 0 { parts.push("Écriture"); }
-    if bits & 1 != 0 { parts.push(if entry.is_dir { "Traversal" } else { "Exécution" }); }
-    if parts.is_empty() { "Accès refusé".into() } else { parts.join(" + ") }
+    let mut parts: Vec<&str> = vec![];
+    if bits & 4 != 0 { parts.push(&lang.fe_access_read_perm); }
+    if bits & 2 != 0 { parts.push(&lang.fe_access_write_perm); }
+    if bits & 1 != 0 {
+        parts.push(if entry.is_dir { &lang.fe_access_trav_perm } else { &lang.fe_access_exec_perm });
+    }
+    if parts.is_empty() { lang.fe_access_denied_msg.clone() } else { parts.join(" + ") }
 }
 
 // ─── Raccourcis clavier ───────────────────────────────────────────────────────
 
-fn handle_shortcuts(state: &mut FileExplorerState, ui: &mut Ui, req: &mut Option<SftpRequest>) {
+fn handle_shortcuts(
+    state: &mut FileExplorerState,
+    ui: &mut Ui,
+    req: &mut Option<SftpRequest>,
+    lang: &crate::i18n::Lang,
+) {
     if state.rename_path.is_some() { return; }
+    if ui.ctx().memory(|m| m.focused().is_some()) { return; }
     ui.input_mut(|i| {
         if i.consume_key(Modifiers::NONE, Key::Delete) && !state.selected.is_empty() {
             let paths: Vec<String> = state.selected.iter().cloned().collect();
-            state.add_toast(format!("{} élément(s) supprimé(s)", paths.len()));
+            state.add_toast(crate::i18n::Lang::fmt_n(&lang.fe_toast_deleted, paths.len()));
             state.selected.clear();
             *req = Some(SftpRequest::DeletePaths(paths));
         }
@@ -266,20 +279,20 @@ fn handle_shortcuts(state: &mut FileExplorerState, ui: &mut Ui, req: &mut Option
                 op: ClipOp::Copy,
                 paths: state.selected.iter().cloned().collect(),
             });
-            state.add_toast("Copié dans le presse-papiers");
+            state.add_toast(lang.fe_toast_copied.clone());
         }
         if i.consume_key(Modifiers::CTRL, Key::X) && !state.selected.is_empty() {
             state.clipboard = Some(ClipEntry {
                 op: ClipOp::Cut,
                 paths: state.selected.iter().cloned().collect(),
             });
-            state.add_toast("Coupé dans le presse-papiers");
+            state.add_toast(lang.fe_toast_cut.clone());
         }
         if i.consume_key(Modifiers::CTRL, Key::V) {
             if let Some(clip) = state.clipboard.clone() {
                 let dest = state.current_path.clone();
                 if clip.op == ClipOp::Cut { state.clipboard = None; }
-                state.add_toast(format!("{} élément(s) collé(s)", clip.paths.len()));
+                state.add_toast(crate::i18n::Lang::fmt_n(&lang.fe_toast_pasted, clip.paths.len()));
                 *req = Some(SftpRequest::MovePaths { paths: clip.paths, dest });
             }
         }
@@ -288,19 +301,21 @@ fn handle_shortcuts(state: &mut FileExplorerState, ui: &mut Ui, req: &mut Option
 
 // ─── Point d'entrée du rendu ──────────────────────────────────────────────────
 
+/// `lang`        : traductions actives de l'interface.
 /// `username`    : nom d'utilisateur SSH (pour les droits).
 /// `current_uid` : UID numérique de l'utilisateur courant si connu.
 /// Retourne `Some(SftpRequest)` si une opération SFTP doit être déclenchée.
 pub fn render(
     state: &mut FileExplorerState,
     ui: &mut Ui,
+    lang: &crate::i18n::Lang,
     username: &str,
     current_uid: Option<u32>,
 ) -> Option<SftpRequest> {
     let mut req: Option<SftpRequest> = None;
 
     state.toasts.retain(|t| t.born.elapsed() < Duration::from_secs(3));
-    handle_shortcuts(state, ui, &mut req);
+    handle_shortcuts(state, ui, &mut req, lang);
 
     let total_h = ui.available_height();
     let total_w = ui.available_width();
@@ -311,23 +326,23 @@ pub fn render(
         ui.allocate_ui_with_layout(
             Vec2::new(sidebar_w, total_h),
             egui::Layout::top_down(egui::Align::LEFT),
-            |ui| render_sidebar(state, ui, &mut req),
+            |ui| render_sidebar(state, ui, lang, &mut req),
         );
 
         ui.separator();
 
         // Zone principale
         ui.vertical(|ui| {
-            render_toolbar(state, ui, &mut req);
+            render_toolbar(state, ui, lang, &mut req);
             ui.separator();
 
             let status_h = 22.0;
             let content_h = (ui.available_height() - status_h - 6.0).max(40.0);
             ui.allocate_ui(Vec2::new(ui.available_width(), content_h), |ui| {
-                render_content(state, ui, username, current_uid, &mut req);
+                render_content(state, ui, lang, username, current_uid, &mut req);
             });
             ui.separator();
-            render_status_bar(state, ui, username);
+            render_status_bar(state, ui, lang, username);
         });
     });
 
@@ -337,8 +352,13 @@ pub fn render(
 
 // ─── Panneau latéral ─────────────────────────────────────────────────────────
 
-fn render_sidebar(state: &mut FileExplorerState, ui: &mut Ui, req: &mut Option<SftpRequest>) {
-    ui.label(egui::RichText::new("Favoris").strong().small());
+fn render_sidebar(
+    state: &mut FileExplorerState,
+    ui: &mut Ui,
+    lang: &crate::i18n::Lang,
+    req: &mut Option<SftpRequest>,
+) {
+    ui.label(egui::RichText::new(&lang.fe_favorites).strong().small());
     ui.add_space(2.0);
     let favs: Vec<(String, String)> = state.favorites.clone();
     for (label, path) in &favs {
@@ -351,13 +371,13 @@ fn render_sidebar(state: &mut FileExplorerState, ui: &mut Ui, req: &mut Option<S
     ui.add_space(8.0);
     ui.separator();
     ui.add_space(4.0);
-    ui.label(egui::RichText::new("Légende droits").small().weak());
+    ui.label(egui::RichText::new(&lang.fe_legend_title).small().weak());
     ui.add_space(2.0);
     for (color, label) in [
-        (Color32::from_rgb(80, 210, 80),  "Lecture + Écriture"),
-        (Color32::from_rgb(220, 200, 60), "Lecture seule"),
-        (Color32::from_rgb(220, 80,  80), "Accès refusé"),
-        (Color32::from_rgb(140, 140, 140),"Inconnu"),
+        (Color32::from_rgb(80, 210, 80),  lang.fe_legend_full.as_str()),
+        (Color32::from_rgb(220, 200, 60), lang.fe_legend_read.as_str()),
+        (Color32::from_rgb(220, 80,  80), lang.fe_legend_denied.as_str()),
+        (Color32::from_rgb(140, 140, 140), lang.fe_legend_unknown.as_str()),
     ] {
         ui.horizontal(|ui| {
             ui.colored_label(color, "●");
@@ -368,18 +388,27 @@ fn render_sidebar(state: &mut FileExplorerState, ui: &mut Ui, req: &mut Option<S
 
 // ─── Barre d'outils ──────────────────────────────────────────────────────────
 
-fn render_toolbar(state: &mut FileExplorerState, ui: &mut Ui, req: &mut Option<SftpRequest>) {
+fn render_toolbar(
+    state: &mut FileExplorerState,
+    ui: &mut Ui,
+    lang: &crate::i18n::Lang,
+    req: &mut Option<SftpRequest>,
+) {
     ui.horizontal(|ui| {
         let can_back    = !state.nav_back.is_empty();
         let can_forward = !state.nav_forward.is_empty();
 
-        if ui.add_enabled(can_back,    egui::Button::new(ph::ARROW_LEFT)).on_hover_text("Précédent").clicked() {
-            if let Some(r) = state.navigate_back()    { *req = Some(r); }
+        if ui.add_enabled(can_back, egui::Button::new(ph::ARROW_LEFT))
+            .on_hover_text(&lang.fe_nav_prev).clicked()
+        {
+            if let Some(r) = state.navigate_back() { *req = Some(r); }
         }
-        if ui.add_enabled(can_forward, egui::Button::new(ph::ARROW_RIGHT)).on_hover_text("Suivant").clicked() {
+        if ui.add_enabled(can_forward, egui::Button::new(ph::ARROW_RIGHT))
+            .on_hover_text(&lang.fe_nav_next).clicked()
+        {
             if let Some(r) = state.navigate_forward() { *req = Some(r); }
         }
-        if ui.button(ph::ARROW_UP).on_hover_text("Dossier parent").clicked() {
+        if ui.button(ph::ARROW_UP).on_hover_text(&lang.fe_nav_up).clicked() {
             if let Some(r) = state.navigate_up() { *req = Some(r); }
         }
 
@@ -389,7 +418,7 @@ fn render_toolbar(state: &mut FileExplorerState, ui: &mut Ui, req: &mut Option<S
         if state.breadcrumb_edit {
             let resp = ui.add_sized(
                 [180.0, 20.0],
-                egui::TextEdit::singleline(&mut state.breadcrumb_input).hint_text("Chemin…"),
+                egui::TextEdit::singleline(&mut state.breadcrumb_input).hint_text(&lang.fe_path_hint),
             );
             if resp.lost_focus() || ui.input(|i| i.key_pressed(Key::Enter)) {
                 let p = state.breadcrumb_input.clone();
@@ -410,7 +439,7 @@ fn render_toolbar(state: &mut FileExplorerState, ui: &mut Ui, req: &mut Option<S
                     go = Some("/".to_string() + &parts[..=i].join("/"));
                 }
             }
-            if ui.small_button(ph::PENCIL).on_hover_text("Éditer le chemin").clicked() {
+            if ui.small_button(ph::PENCIL).on_hover_text(&lang.fe_edit_path_hint).clicked() {
                 state.breadcrumb_input = state.current_path.clone();
                 state.breadcrumb_edit = true;
             }
@@ -419,19 +448,19 @@ fn render_toolbar(state: &mut FileExplorerState, ui: &mut Ui, req: &mut Option<S
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let (vl, vl_tip) = if state.view_mode == ViewMode::Grid {
-                (ph::LIST,      "Passer en vue liste")
+                (ph::LIST,      lang.fe_view_list.as_str())
             } else {
-                (ph::GRID_FOUR, "Passer en vue grille")
+                (ph::GRID_FOUR, lang.fe_view_grid.as_str())
             };
             if ui.small_button(vl).on_hover_text(vl_tip).clicked() {
                 state.view_mode = if state.view_mode == ViewMode::Grid { ViewMode::List } else { ViewMode::Grid };
             }
-            if ui.small_button(ph::ARROWS_CLOCKWISE).on_hover_text("Rafraîchir").clicked() {
+            if ui.small_button(ph::ARROWS_CLOCKWISE).on_hover_text(&lang.fe_refresh_hint).clicked() {
                 state.loading = true;
                 *req = Some(SftpRequest::ListDir(state.current_path.clone()));
             }
-            if ui.small_button(format!("{}+", ph::FOLDER)).on_hover_text("Nouveau dossier").clicked() {
-                let base = format!("{}/Nouveau dossier", state.current_path.trim_end_matches('/'));
+            if ui.small_button(format!("{}+", ph::FOLDER)).on_hover_text(&lang.fe_new_folder_hint).clicked() {
+                let base = format!("{}/new_folder", state.current_path.trim_end_matches('/'));
                 let path = unique_name(&state.entries, &base);
                 let fname = filename_of(&path);
                 state.rename_path = Some(path.clone());
@@ -439,8 +468,8 @@ fn render_toolbar(state: &mut FileExplorerState, ui: &mut Ui, req: &mut Option<S
                 state.rename_request_focus = true;
                 *req = Some(SftpRequest::Mkdir(path));
             }
-            if ui.small_button(format!("{}+", ph::FILE)).on_hover_text("Nouveau fichier").clicked() {
-                let base = format!("{}/nouveau_fichier", state.current_path.trim_end_matches('/'));
+            if ui.small_button(format!("{}+", ph::FILE)).on_hover_text(&lang.fe_new_file_hint).clicked() {
+                let base = format!("{}/new_file", state.current_path.trim_end_matches('/'));
                 let path = unique_name(&state.entries, &base);
                 let fname = filename_of(&path);
                 state.rename_path = Some(path.clone());
@@ -451,7 +480,7 @@ fn render_toolbar(state: &mut FileExplorerState, ui: &mut Ui, req: &mut Option<S
             ui.add(
                 egui::TextEdit::singleline(&mut state.search_query)
                     .desired_width(110.0)
-                    .hint_text(format!("{} Filtrer…", ph::MAGNIFYING_GLASS)),
+                    .hint_text(&lang.fe_search_hint),
             );
         });
     });
@@ -462,13 +491,14 @@ fn render_toolbar(state: &mut FileExplorerState, ui: &mut Ui, req: &mut Option<S
 fn render_content(
     state: &mut FileExplorerState,
     ui: &mut Ui,
+    lang: &crate::i18n::Lang,
     username: &str,
     current_uid: Option<u32>,
     req: &mut Option<SftpRequest>,
 ) {
     if state.loading {
         ui.centered_and_justified(|ui| {
-            ui.horizontal(|ui| { ui.spinner(); ui.label("Chargement…"); });
+            ui.horizontal(|ui| { ui.spinner(); ui.label(&lang.fe_loading); });
         });
         return;
     }
@@ -483,11 +513,11 @@ fn render_content(
                 ui.label(egui::RichText::new(err).color(Color32::from_rgb(220, 100, 100)).strong());
                 ui.add_space(6.0);
                 ui.label(
-                    egui::RichText::new(format!("Chemin : {}", state.current_path))
+                    egui::RichText::new(format!("{} {}", lang.fe_path_label, state.current_path))
                         .small().weak(),
                 );
                 ui.add_space(12.0);
-                if ui.button(format!("{} Dossier parent", ph::ARROW_UP)).clicked() {
+                if ui.button(format!("{} {}", ph::ARROW_UP, lang.fe_nav_up)).clicked() {
                     *req = state.navigate_up();
                 }
             });
@@ -503,7 +533,7 @@ fn render_content(
     if visible.is_empty() {
         ui.centered_and_justified(|ui| {
             ui.label(egui::RichText::new(
-                if state.search_query.is_empty() { "Dossier vide" } else { "Aucun résultat" }
+                if state.search_query.is_empty() { &lang.fe_empty } else { &lang.fe_no_results }
             ).weak());
         });
         return;
@@ -512,8 +542,8 @@ fn render_content(
     state.item_rects.clear();
 
     match state.view_mode {
-        ViewMode::List => render_list(state, ui, &visible, username, current_uid, req),
-        ViewMode::Grid => render_grid(state, ui, &visible, username, current_uid, req),
+        ViewMode::List => render_list(state, ui, lang, &visible, username, current_uid, req),
+        ViewMode::Grid => render_grid(state, ui, lang, &visible, username, current_uid, req),
     }
 
     // Dessin du lasso
@@ -529,6 +559,7 @@ fn render_content(
 fn render_list(
     state: &mut FileExplorerState,
     ui: &mut Ui,
+    lang: &crate::i18n::Lang,
     visible: &[RemoteEntry],
     username: &str,
     current_uid: Option<u32>,
@@ -537,10 +568,10 @@ fn render_list(
     // En-têtes
     egui::Grid::new("fe_hdr").num_columns(5).spacing([6.0, 2.0]).show(ui, |ui| {
         ui.label(egui::RichText::new("●").weak().small());
-        ui.label(egui::RichText::new("Nom").strong().small());
-        ui.label(egui::RichText::new("Permissions").strong().small());
-        ui.label(egui::RichText::new("Taille").strong().small());
-        ui.label(egui::RichText::new("Modifié").strong().small());
+        ui.label(egui::RichText::new(&lang.fe_col_name).strong().small());
+        ui.label(egui::RichText::new(&lang.fe_col_perms).strong().small());
+        ui.label(egui::RichText::new(&lang.fe_col_size).strong().small());
+        ui.label(egui::RichText::new(&lang.fe_col_modified).strong().small());
         ui.end_row();
     });
     ui.separator();
@@ -549,7 +580,7 @@ fn render_list(
         // Interaction de fond (lasso + menu ctx) sans avancer le curseur de layout.
         let bg_rect = ui.available_rect_before_wrap();
         let bg = ui.interact(bg_rect, ui.id().with("list_bg"), egui::Sense::click_and_drag());
-        handle_bg(state, &bg, visible, req);
+        handle_bg(state, &bg, lang, visible, req);
 
         egui::Grid::new("fe_list_rows").num_columns(5).spacing([6.0, 2.0]).min_row_height(20.0)
             .show(ui, |ui| {
@@ -566,7 +597,7 @@ fn render_list(
                     if state.rename_path.as_deref() == Some(entry.path.as_str()) {
                         if let Some(new_name) = render_rename(state, ui, &entry.path) {
                             let to = format!("{}/{new_name}", state.current_path.trim_end_matches('/'));
-                            state.add_toast(format!("Renommé en «{new_name}»"));
+                            state.add_toast(crate::i18n::Lang::fmt_name(&lang.fe_toast_renamed, &new_name));
                             *req = Some(SftpRequest::Rename { from: entry.path.clone(), to });
                         }
                         // Placeholders pour les colonnes restantes
@@ -578,17 +609,21 @@ fn render_list(
                         let resp = ui.selectable_label(is_sel, rt);
 
                         let tip = format!(
-                            "Chemin : {}\nPerms : {}\nAccès ({username}) : {}\nTaille : {}\nModifié : {}",
-                            entry.path, perm_s,
-                            access_label(entry, username, current_uid),
+                            "{}: {}\n{}: {}\n{} ({}): {}\n{}: {}\n{}: {}",
+                            lang.fe_hover_path, entry.path,
+                            lang.fe_hover_perms, perm_s,
+                            lang.fe_hover_access, username,
+                            access_label(entry, username, current_uid, lang),
+                            lang.fe_hover_size,
                             if entry.is_dir { "—".into() } else { fmt_size(entry.size) },
+                            lang.fe_hover_modified,
                             entry.modified.map(fmt_date).unwrap_or_else(|| "—".into()),
                         );
                         let item_rect = resp.rect;
                         state.item_rects.push((entry.path.clone(), item_rect));
                         handle_item(state, &entry.path, entry.is_dir, &resp, req);
                         let resp = resp.on_hover_text(tip);
-                        resp.context_menu(|ui| ctx_menu(state, ui, Some(&entry.path), entry.is_dir, req));
+                        resp.context_menu(|ui| ctx_menu(state, ui, lang, Some(&entry.path), entry.is_dir, req));
 
                         ui.label(egui::RichText::new(&perm_s).monospace().small().color(color));
                         let sz = if entry.is_dir { "—".into() } else { fmt_size(entry.size) };
@@ -615,6 +650,7 @@ const TILE_TOTAL_W: f32 = TILE_INNER_W + TILE_MARGIN * 2.0 + TILE_SPACING;
 fn render_grid(
     state: &mut FileExplorerState,
     ui: &mut Ui,
+    lang: &crate::i18n::Lang,
     visible: &[RemoteEntry],
     username: &str,
     current_uid: Option<u32>,
@@ -628,7 +664,7 @@ fn render_grid(
     ScrollArea::vertical().id_salt("fe_grid").show(ui, |ui| {
         let bg_rect = ui.available_rect_before_wrap();
         let bg = ui.interact(bg_rect, ui.id().with("grid_bg"), egui::Sense::click_and_drag());
-        handle_bg(state, &bg, visible, req);
+        handle_bg(state, &bg, lang, visible, req);
 
         egui::Grid::new("fe_grid_content")
             .num_columns(cols)
@@ -664,7 +700,7 @@ fn render_grid(
                                     if state.rename_path.as_deref() == Some(entry.path.as_str()) {
                                         if let Some(new_name) = render_rename(state, ui, &entry.path) {
                                             let to = format!("{}/{new_name}", state.current_path.trim_end_matches('/'));
-                                            state.add_toast(format!("Renommé en «{new_name}»"));
+                                            state.add_toast(crate::i18n::Lang::fmt_name(&lang.fe_toast_renamed, &new_name));
                                             *req = Some(SftpRequest::Rename { from: entry.path.clone(), to });
                                         }
                                     } else {
@@ -680,16 +716,19 @@ fn render_grid(
                     state.item_rects.push((entry.path.clone(), resp.rect));
 
                     let tip = format!(
-                        "{}\nPerms : {}\nAccès ({username}) : {}\nTaille : {}\nModifié : {}",
+                        "{}\n{}: {}\n{} ({}): {}\n{}: {}\n{}: {}",
                         entry.path,
-                        perm_s,
-                        access_label(entry, username, current_uid),
+                        lang.fe_hover_perms, perm_s,
+                        lang.fe_hover_access, username,
+                        access_label(entry, username, current_uid, lang),
+                        lang.fe_hover_size,
                         if entry.is_dir { "—".into() } else { fmt_size(entry.size) },
+                        lang.fe_hover_modified,
                         entry.modified.map(fmt_date).unwrap_or_else(|| "—".into()),
                     );
                     handle_item(state, &entry.path, entry.is_dir, &resp, req);
                     let resp = resp.on_hover_text(tip);
-                    resp.context_menu(|ui| ctx_menu(state, ui, Some(&entry.path), entry.is_dir, req));
+                    resp.context_menu(|ui| ctx_menu(state, ui, lang, Some(&entry.path), entry.is_dir, req));
 
                     // Fin de ligne après chaque `cols` tuiles.
                     if (idx + 1) % cols == 0 {
@@ -740,19 +779,20 @@ fn render_rename(state: &mut FileExplorerState, ui: &mut Ui, path: &str) -> Opti
 fn ctx_menu(
     state: &mut FileExplorerState,
     ui: &mut Ui,
+    lang: &crate::i18n::Lang,
     path: Option<&str>,
     is_dir: bool,
     req: &mut Option<SftpRequest>,
 ) {
     if let Some(p) = path {
         if is_dir {
-            if ui.button(format!("{} Ouvrir", ph::FOLDER_OPEN)).clicked() {
+            if ui.button(&lang.fe_ctx_open).clicked() {
                 *req = Some(state.navigate_to(p.to_string())); ui.close_menu();
             }
-        } else if ui.button(format!("{} Télécharger", ph::DOWNLOAD_SIMPLE)).clicked() {
+        } else if ui.button(&lang.fe_ctx_download).clicked() {
             *req = Some(SftpRequest::Download { remote: p.to_string() }); ui.close_menu();
         }
-        if ui.button(format!("{} Renommer  [F2]", ph::PENCIL)).clicked() {
+        if ui.button(&lang.fe_ctx_rename).clicked() {
             let name = state.entries.iter().find(|e| e.path == p)
                 .map(|e| e.name.clone()).unwrap_or_default();
             state.rename_path = Some(p.to_string());
@@ -761,38 +801,38 @@ fn ctx_menu(
             ui.close_menu();
         }
         ui.separator();
-        if ui.button(format!("{} Copier  [Ctrl+C]", ph::CLIPBOARD)).clicked() {
+        if ui.button(&lang.fe_ctx_copy).clicked() {
             state.clipboard = Some(ClipEntry { op: ClipOp::Copy, paths: vec![p.to_string()] });
-            state.add_toast("Copié"); ui.close_menu();
+            state.add_toast(lang.fe_toast_copied.clone()); ui.close_menu();
         }
-        if ui.button(format!("{} Couper  [Ctrl+X]", ph::SCISSORS)).clicked() {
+        if ui.button(&lang.fe_ctx_cut).clicked() {
             state.clipboard = Some(ClipEntry { op: ClipOp::Cut, paths: vec![p.to_string()] });
-            state.add_toast("Coupé"); ui.close_menu();
+            state.add_toast(lang.fe_toast_cut.clone()); ui.close_menu();
         }
         ui.separator();
         let n_sel = if state.selected.contains(p) { state.selected.len() } else { 1 };
+        let del_label = crate::i18n::Lang::fmt_n(&lang.fe_ctx_delete, n_sel);
         if ui.add(egui::Button::new(
-            egui::RichText::new(format!("{} Supprimer ({n_sel})  [Suppr]", ph::TRASH))
-                .color(egui::Color32::from_rgb(220, 70, 70))
+            egui::RichText::new(&del_label).color(egui::Color32::from_rgb(220, 70, 70))
         )).clicked() {
             let paths = if state.selected.contains(p) {
                 state.selected.iter().cloned().collect()
             } else { vec![p.to_string()] };
-            state.add_toast(format!("{} élément(s) supprimé(s)", paths.len()));
+            state.add_toast(crate::i18n::Lang::fmt_n(&lang.fe_toast_deleted, paths.len()));
             state.selected.clear();
             *req = Some(SftpRequest::DeletePaths(paths));
             ui.close_menu();
         }
         ui.separator();
-        if ui.button(format!("{} Copier le chemin", ph::CLIPBOARD)).clicked() {
+        if ui.button(&lang.fe_ctx_copy_path).clicked() {
             ui.output_mut(|o| o.copied_text = p.to_string());
-            state.add_toast("Chemin copié"); ui.close_menu();
+            state.add_toast(lang.fe_toast_path_copied.clone()); ui.close_menu();
         }
     } else {
-        ui.label(egui::RichText::new("Créer").strong().small());
+        ui.label(egui::RichText::new(&lang.fe_ctx_create).strong().small());
         ui.separator();
-        if ui.button(format!("{} Nouveau dossier", ph::FOLDER_PLUS)).clicked() {
-            let base = format!("{}/Nouveau dossier", state.current_path.trim_end_matches('/'));
+        if ui.button(&lang.fe_ctx_new_folder).clicked() {
+            let base = format!("{}/new_folder", state.current_path.trim_end_matches('/'));
             let p = unique_name(&state.entries, &base);
             state.rename_path = Some(p.clone());
             state.rename_buf = filename_of(&p);
@@ -800,8 +840,8 @@ fn ctx_menu(
             *req = Some(SftpRequest::Mkdir(p));
             ui.close_menu();
         }
-        if ui.button(format!("{} Nouveau fichier", ph::FILE_PLUS)).clicked() {
-            let base = format!("{}/nouveau_fichier", state.current_path.trim_end_matches('/'));
+        if ui.button(&lang.fe_ctx_new_file).clicked() {
+            let base = format!("{}/new_file", state.current_path.trim_end_matches('/'));
             let p = unique_name(&state.entries, &base);
             state.rename_path = Some(p.clone());
             state.rename_buf = filename_of(&p);
@@ -814,15 +854,16 @@ fn ctx_menu(
     if state.clipboard.is_some() {
         ui.separator();
         let lbl = match state.clipboard.as_ref().map(|c| &c.op) {
-            Some(ClipOp::Copy) => format!("{} Coller (copie)  [Ctrl+V]", ph::CLIPBOARD),
-            Some(ClipOp::Cut)  => format!("{} Coller (déplacer)  [Ctrl+V]", ph::CLIPBOARD),
-            None => format!("{} Coller", ph::CLIPBOARD),
+            Some(ClipOp::Copy) => lang.fe_ctx_paste_copy.as_str(),
+            Some(ClipOp::Cut)  => lang.fe_ctx_paste_move.as_str(),
+            None               => lang.fe_ctx_paste.as_str(),
         };
-        if ui.button(&lbl).clicked() {
+        if ui.button(lbl).clicked() {
             if let Some(clip) = state.clipboard.clone() {
                 let dest = state.current_path.clone();
+                let n = clip.paths.len();
                 if clip.op == ClipOp::Cut { state.clipboard = None; }
-                state.add_toast(format!("{} élément(s) collé(s)", clip.paths.len()));
+                state.add_toast(crate::i18n::Lang::fmt_n(&lang.fe_toast_pasted, n));
                 *req = Some(SftpRequest::MovePaths { paths: clip.paths, dest });
             }
             ui.close_menu();
@@ -832,14 +873,23 @@ fn ctx_menu(
 
 // ─── Barre de statut ─────────────────────────────────────────────────────────
 
-fn render_status_bar(state: &FileExplorerState, ui: &mut Ui, username: &str) {
+fn render_status_bar(
+    state: &FileExplorerState,
+    ui: &mut Ui,
+    lang: &crate::i18n::Lang,
+    username: &str,
+) {
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(&state.current_path).small().weak().monospace());
         ui.separator();
-        ui.label(egui::RichText::new(format!("{} éléments", state.entries.len())).small().weak());
+        ui.label(egui::RichText::new(
+            crate::i18n::Lang::fmt_n(&lang.fe_items, state.entries.len())
+        ).small().weak());
         if !state.selected.is_empty() {
             ui.separator();
-            ui.label(egui::RichText::new(format!("{} sélectionné(s)", state.selected.len())).small());
+            ui.label(egui::RichText::new(
+                crate::i18n::Lang::fmt_n(&lang.fe_selected, state.selected.len())
+            ).small());
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(egui::RichText::new(format!("👤 {username}")).small().weak());
@@ -880,6 +930,7 @@ fn render_toasts(state: &FileExplorerState, ui: &mut Ui) {
 fn handle_bg(
     state: &mut FileExplorerState,
     bg: &egui::Response,
+    lang: &crate::i18n::Lang,
     visible: &[RemoteEntry],
     req: &mut Option<SftpRequest>,
 ) {
@@ -910,7 +961,7 @@ fn handle_bg(
         state.selected.clear();
         state.last_active = None;
     }
-    bg.context_menu(|ui| ctx_menu(state, ui, None, false, req));
+    bg.context_menu(|ui| ctx_menu(state, ui, lang, None, false, req));
 }
 
 // ─── Interaction item ─────────────────────────────────────────────────────────

@@ -2,6 +2,7 @@
 /// `BetterSshApp` contient tout l'état global : onglets ouverts, sidebar,
 /// panneau de scan réseau, préférences, etc.
 use crate::config::{AppConfig, AuthMethod, ConnectionProfile, Vault};
+use crate::i18n::{Lang, LangFile};
 use crate::network::scanner::ScanResult;
 use crate::ssh::session::{SessionCommand, SessionEvent, SftpCommand, SshSession};
 use crate::ui::{
@@ -113,6 +114,18 @@ pub struct BetterSshApp {
     pub vault: Option<Vault>,
     /// Dialogue de connexion en attente depuis le scan réseau (None = pas de dialogue).
     pub pending_scan_connect: Option<ScanConnectDialog>,
+    /// Langue active de l'interface.
+    pub lang: Lang,
+    /// Répertoire de travail (config, vault, lang…).
+    pub work_dir: std::path::PathBuf,
+    /// Stem de la langue active (ex : `"CH_fr"`).
+    pub lang_chosen: String,
+    /// Liste des langues disponibles (embarquées + sur disque).
+    pub lang_files: Vec<LangFile>,
+    /// true = fenêtre de sélection de langue visible.
+    pub show_lang_window: bool,
+    /// Canal de réception d'un téléchargement de langue en arrière-plan.
+    pub lang_download_rx: Option<crossbeam_channel::Receiver<(String, String)>>,
 }
 
 impl BetterSshApp {
@@ -126,6 +139,10 @@ impl BetterSshApp {
         apply_theme(&cc.egui_ctx, dark_mode);
 
         let rt = tokio::runtime::Handle::current();
+
+        let work_dir = crate::i18n::detect_work_dir();
+        let (lang, lang_chosen) = crate::i18n::load_lang(&work_dir);
+        let lang_files = crate::i18n::list_lang_files(&work_dir);
 
         Self {
             sidebar: SidebarState::new(config.profiles.clone()),
@@ -142,6 +159,12 @@ impl BetterSshApp {
             tokio_rt: rt,
             vault: None,
             pending_scan_connect: None,
+            lang,
+            work_dir,
+            lang_chosen,
+            lang_files,
+            show_lang_window: false,
+            lang_download_rx: None,
         }
     }
 
@@ -233,6 +256,7 @@ impl eframe::App for BetterSshApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         // Collecte d'abord les événements SSH reçus en async depuis la dernière frame.
         poll_session_events(self);
+        poll_lang_download(self);
         handle_keyboard_shortcuts(self, ctx);
         crate::ui::render(self, ctx);
         // Repaint régulier pour rafraîchir les données SSH qui arrivent en async.
@@ -434,6 +458,30 @@ fn poll_session_events(app: &mut BetterSshApp) {
                 }
             }
         }
+    }
+}
+
+// ─── Téléchargement de langue en arrière-plan ────────────────────────────────
+
+fn poll_lang_download(app: &mut BetterSshApp) {
+    if let Some(rx) = &app.lang_download_rx {
+        if let Ok((stem, text)) = rx.try_recv() {
+            let lang_dir = app.work_dir.join("lang");
+            let _ = std::fs::create_dir_all(&lang_dir);
+            let _ = std::fs::write(lang_dir.join(format!("{stem}.toml")), &text);
+            app.lang_files = crate::i18n::list_lang_files(&app.work_dir);
+            app.lang_download_rx = None;
+        }
+    }
+}
+
+impl BetterSshApp {
+    /// Recharge la langue depuis le disque/embarqué et l'applique.
+    pub fn reload_lang(&mut self, stem: &str) {
+        crate::i18n::save_lang_choice(&self.work_dir, stem);
+        let (lang, chosen) = crate::i18n::load_lang(&self.work_dir);
+        self.lang = lang;
+        self.lang_chosen = chosen;
     }
 }
 

@@ -44,19 +44,19 @@ impl SidebarState {
 // ─── Rendu egui ──────────────────────────────────────────────────────────────
 
 pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
-    ui.heading("Profils SSH");
+    ui.heading(&app.lang.sidebar_title);
     ui.separator();
 
     // ── Barre de recherche ────────────────────────────────────────────────────
     ui.horizontal(|ui| {
         ui.label(ph::MAGNIFYING_GLASS);
         ui.text_edit_singleline(&mut app.sidebar.search)
-            .on_hover_text("Filtre par nom, hôte ou étiquette");
+            .on_hover_text(&app.lang.sidebar_search_hint);
     });
     ui.add_space(4.0);
 
     // ── Bouton nouveau profil ─────────────────────────────────────────────────
-    if ui.button("＋ Nouvelle connexion").clicked() {
+    if ui.button(&app.lang.sidebar_new_connection).clicked() {
         app.sidebar.edit_profile = Some(ConnectionProfile::default());
         app.sidebar.pending_password.clear();
         app.sidebar.vault_key_input.clear();
@@ -93,21 +93,21 @@ pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
             let vault_locked = profile.host.is_empty() || profile.username.is_empty();
             // Nom de session (toujours visible).
             let session_name = if profile.name.is_empty() {
-                if vault_locked { format!("Sans nom {}", ph::LOCK) }
+                if vault_locked { format!("{} {}", ph::LOCK, app.lang.sidebar_no_name) }
                 else { profile.host.clone() }
             } else {
                 profile.name.clone()
             };
             // Détails de connexion sur la deuxième ligne.
             let conn_detail = if vault_locked {
-                format!("{} Données chiffrées", ph::LOCK)
+                app.lang.sidebar_locked_data.clone()
             } else {
                 format!("{}@{}:{}", profile.username, profile.host, profile.port)
             };
             let hover = if vault_locked {
-                format!("{} Vault verrouillé — déverrouillez pour voir l'hôte\nDouble-clic ou clic droit → Connecter", ph::LOCK)
+                format!("{}\n{}", app.lang.sidebar_vault_locked_hover, app.lang.sidebar_double_click_hint)
             } else {
-                format!("{}@{}:{}\nDouble-clic ou clic droit → Connecter", profile.username, profile.host, profile.port)
+                format!("{}@{}:{}\n{}", profile.username, profile.host, profile.port, app.lang.sidebar_double_click_hint)
             };
             let tags = profile.tags.clone();
 
@@ -155,10 +155,10 @@ pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.add(egui::Button::new(
                                 egui::RichText::new(ph::TRASH).color(egui::Color32::from_rgb(220, 70, 70))
-                            )).on_hover_text("Supprimer le profil").clicked() {
+                            )).on_hover_text(&app.lang.sidebar_delete_hint).clicked() {
                                 to_delete = Some(i);
                             }
-                            if ui.small_button(ph::PENCIL).on_hover_text("Modifier").clicked() {
+                            if ui.small_button(ph::PENCIL).on_hover_text(&app.lang.sidebar_edit_hint).clicked() {
                                 to_edit = Some(i);
                             }
                         });
@@ -332,7 +332,11 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
     // Passe le focus au champ suivant dans la séquence clavier du formulaire.
     let mut focus_next = false;
 
-    let title = if profile.name.is_empty() { "Nouvelle connexion" } else { "Modifier le profil" };
+    let title = if profile.name.is_empty() {
+        app.lang.dlg_new_title.as_str()
+    } else {
+        app.lang.dlg_edit_title.as_str()
+    };
     // true si ce profil a des données chiffrées dans vault.toml et que le vault est verrouillé.
     let needs_vault_unlock = app.vault.is_none()
         && Vault::profile_has_encrypted_data(&profile.id);
@@ -347,38 +351,26 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                 ui.vertical_centered(|ui| {
                     ui.label(egui::RichText::new(ph::LOCK).size(32.0));
                     ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new("Ce profil contient des données chiffrées.")
-                            .strong(),
-                    );
-                    ui.label(
-                        egui::RichText::new(
-                            "Entrez la clé vault pour déverrouiller et accéder à la configuration."
-                        )
-                        .small()
-                        .weak(),
-                    );
+                    ui.label(egui::RichText::new(&app.lang.dlg_vault_screen_title).strong());
+                    ui.label(egui::RichText::new(&app.lang.dlg_vault_screen_subtitle).small().weak());
                 });
                 ui.add_space(12.0);
                 ui.separator();
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    ui.label("Clé vault :");
+                    ui.label(&app.lang.dlg_vault_key_label);
                     let resp = ui.add(
                         egui::TextEdit::singleline(&mut vault_key_input)
                             .password(true)
-                            .hint_text("Clé maître du vault")
+                            .hint_text(&app.lang.dlg_vault_key_hint)
                             .desired_width(200.0),
                     );
                     if resp.changed() { app.sidebar.vault_error = None; }
-                    // Entrée = Déverrouiller (même comportement que le bouton).
                     if enter_in(&resp, ui) && !vault_key_input.is_empty() {
                         pending_unlock = true;
                     }
                     let can_unlock = !vault_key_input.is_empty();
-                    if ui.add_enabled(can_unlock, egui::Button::new(
-                        format!("{} Déverrouiller", ph::LOCK_OPEN)
-                    )).clicked() {
+                    if ui.add_enabled(can_unlock, egui::Button::new(&app.lang.dlg_unlock_btn)).clicked() {
                         pending_unlock = true;
                     }
                 });
@@ -393,7 +385,7 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                 ui.separator();
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    if ui.button("✕ Annuler").clicked() { action = DialogAction::Cancel; }
+                    if ui.button(&app.lang.dlg_cancel_btn).clicked() { action = DialogAction::Cancel; }
                 });
             } else {
                 // ── Vue complète : vault déverrouillé ou nouveau profil ────────
@@ -401,20 +393,20 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                     .num_columns(2)
                     .spacing([8.0, 8.0])
                     .show(ui, |ui| {
-                        ui.label("Nom :");
+                        ui.label(&app.lang.dlg_field_name);
                         let resp = ui.text_edit_singleline(&mut profile.name)
-                            .on_hover_text("Nom affiché dans la barre latérale");
+                            .on_hover_text(&app.lang.dlg_hint_name);
                         // Entrée → passe au champ Hôte.
                         if focus_next { resp.request_focus(); focus_next = false; }
                         if enter_in(&resp, ui) { focus_next = true; }
                         ui.end_row();
 
-                        ui.label("Hôte (IP) :");
+                        ui.label(&app.lang.dlg_field_host);
                         ui.vertical(|ui| {
                             let resp = ui.add(
                                 egui::TextEdit::singleline(&mut profile.host)
-                                    .hint_text("Adresse IP ou nom DNS"),
-                            ).on_hover_text("Adresse IP ou nom DNS");
+                                    .hint_text(&app.lang.dlg_hint_host),
+                            ).on_hover_text(&app.lang.dlg_hint_host);
                             if focus_next { resp.request_focus(); focus_next = false; }
                             // Entrée → passe au champ Port.
                             if enter_in(&resp, ui) { focus_next = true; }
@@ -428,7 +420,7 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                         });
                         ui.end_row();
 
-                        ui.label("Port :");
+                        ui.label(&app.lang.dlg_field_port);
                         let mut port_str = profile.port.to_string();
                         let resp = ui.add(
                             egui::TextEdit::singleline(&mut port_str).desired_width(60.0)
@@ -442,10 +434,10 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                         }
                         ui.end_row();
 
-                        ui.label("Utilisateur :");
+                        ui.label(&app.lang.dlg_field_user);
                         let resp = ui.add(
                             egui::TextEdit::singleline(&mut profile.username)
-                                .hint_text("Nom d'utilisateur SSH"),
+                                .hint_text(&app.lang.dlg_hint_user),
                         );
                         if focus_next { resp.request_focus(); focus_next = false; }
                         // Entrée → mot de passe si auth Password, sinon Connecter.
@@ -458,19 +450,21 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                         }
                         ui.end_row();
 
-                        ui.label("Authentification :");
+                        ui.label(&app.lang.dlg_field_auth);
                         egui::ComboBox::new("auth_method_combo", "")
                             .selected_text(profile.auth_method.to_string())
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(
-                                    &mut profile.auth_method, AuthMethod::Password, "Mot de passe"
+                                    &mut profile.auth_method, AuthMethod::Password,
+                                    &app.lang.dlg_auth_password,
                                 );
                                 ui.selectable_value(
-                                    &mut profile.auth_method, AuthMethod::Agent, "Agent SSH"
+                                    &mut profile.auth_method, AuthMethod::Agent,
+                                    &app.lang.dlg_auth_agent,
                                 );
                                 if ui.selectable_label(
                                     matches!(profile.auth_method, AuthMethod::PublicKey { .. }),
-                                    "Clé privée",
+                                    &app.lang.dlg_auth_key,
                                 ).clicked() {
                                     profile.auth_method = AuthMethod::PublicKey {
                                         identity_file: format!(
@@ -483,23 +477,26 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                         ui.end_row();
 
                         if profile.auth_method == AuthMethod::Password {
-                            ui.label("Mot de passe :");
+                            ui.label(&app.lang.dlg_field_password);
                             ui.vertical(|ui| {
                                 if app.sidebar.vault_password_loaded {
                                     ui.label(
-                                        egui::RichText::new(format!("{} Chargé depuis le vault", ph::CHECK))
-                                            .small()
-                                            .color(egui::Color32::from_rgb(80, 200, 80)),
+                                        egui::RichText::new(
+                                            format!("{} {}", ph::CHECK, app.lang.dlg_pw_loaded)
+                                        )
+                                        .small()
+                                        .color(egui::Color32::from_rgb(80, 200, 80)),
                                     );
                                 }
+                                let pw_hint = if app.sidebar.vault_password_loaded {
+                                    app.lang.dlg_pw_hint_loaded.as_str()
+                                } else {
+                                    app.lang.dlg_pw_hint.as_str()
+                                };
                                 let resp = ui.add(
                                     egui::TextEdit::singleline(&mut pending_password)
                                         .password(true)
-                                        .hint_text(if app.sidebar.vault_password_loaded {
-                                            "Laisser vide pour réutiliser le vault"
-                                        } else {
-                                            "Mot de passe SSH"
-                                        }),
+                                        .hint_text(pw_hint),
                                 );
                                 if focus_next { resp.request_focus(); focus_next = false; }
                                 // Entrée dans le dernier champ → Connecter.
@@ -509,25 +506,31 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                         }
 
                         // ── Section vault ──────────────────────────────────────
-                        ui.label("Vault :");
+                        ui.label(&app.lang.dlg_field_vault);
                         ui.vertical(|ui| {
                             if app.vault.is_some() {
                                 ui.label(
-                                    egui::RichText::new(format!("{} Vault déverrouillé", ph::LOCK_OPEN))
-                                        .small()
-                                        .color(egui::Color32::from_rgb(80, 200, 80)),
+                                    egui::RichText::new(
+                                        format!("{} {}", ph::LOCK_OPEN, app.lang.dlg_vault_unlocked)
+                                    )
+                                    .small()
+                                    .color(egui::Color32::from_rgb(80, 200, 80)),
                                 );
                                 ui.label(
+                                    egui::RichText::new(&app.lang.dlg_vault_encrypt)
+                                        .small()
+                                        .weak(),
+                                );
+                            } else {
+                                ui.label(
                                     egui::RichText::new(
-                                        "Hôte, utilisateur et mot de passe seront chiffrés."
+                                        format!("{} {}", ph::LOCK, app.lang.dlg_vault_locked)
                                     )
                                     .small()
                                     .weak(),
                                 );
-                            } else {
-                                ui.label(egui::RichText::new(format!("{} Vault verrouillé", ph::LOCK)).small().weak());
                                 ui.label(
-                                    egui::RichText::new("Requis pour chiffrer hôte et utilisateur.")
+                                    egui::RichText::new(&app.lang.dlg_vault_required)
                                         .small()
                                         .weak(),
                                 );
@@ -535,7 +538,7 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                                     let resp = ui.add(
                                         egui::TextEdit::singleline(&mut vault_key_input)
                                             .password(true)
-                                            .hint_text("Clé maître du vault")
+                                            .hint_text(&app.lang.dlg_vault_key_hint)
                                             .desired_width(160.0),
                                     );
                                     if resp.changed() { app.sidebar.vault_error = None; }
@@ -544,7 +547,7 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                                     }
                                     let can_unlock = !vault_key_input.is_empty();
                                     if ui.add_enabled(can_unlock, egui::Button::new(
-                                        format!("{} Déverrouiller", ph::LOCK_OPEN)
+                                        &app.lang.dlg_unlock_btn
                                     )).clicked() {
                                         pending_unlock = true;
                                     }
@@ -561,12 +564,12 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                         ui.end_row();
 
                         if let AuthMethod::PublicKey { identity_file } = &mut profile.auth_method {
-                            ui.label("Fichier clé :");
+                            ui.label(&app.lang.dlg_field_keyfile);
                             ui.horizontal(|ui| {
                                 ui.text_edit_singleline(identity_file);
-                                if ui.button("…").on_hover_text("Parcourir…").clicked() {
+                                if ui.button(&app.lang.dlg_browse_btn).clicked() {
                                     if let Some(p) = rfd::FileDialog::new()
-                                        .set_title("Sélectionner la clé privée")
+                                        .set_title(&app.lang.dlg_browse_title)
                                         .pick_file()
                                     {
                                         *identity_file = p.to_string_lossy().into_owned();
@@ -576,10 +579,10 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                             ui.end_row();
                         }
 
-                        ui.label("Étiquettes :");
+                        ui.label(&app.lang.dlg_field_tags);
                         let mut tags_str = profile.tags.join(", ");
                         if ui.text_edit_singleline(&mut tags_str)
-                            .on_hover_text("Séparées par des virgules (ex: prod, web)")
+                            .on_hover_text(&app.lang.dlg_hint_tags)
                             .changed()
                         {
                             profile.tags = tags_str
@@ -590,17 +593,17 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                         }
                         ui.end_row();
 
-                        ui.label("Hôte de saut :");
+                        ui.label(&app.lang.dlg_field_jump);
                         let mut jump = profile.jump_host.clone().unwrap_or_default();
                         if ui.text_edit_singleline(&mut jump)
-                            .on_hover_text("Bastion / ProxyJump (ex: bastion.example.com)")
+                            .on_hover_text(&app.lang.dlg_hint_jump)
                             .changed()
                         {
                             profile.jump_host = if jump.is_empty() { None } else { Some(jump) };
                         }
                         ui.end_row();
 
-                        ui.label("Timeout (s) :");
+                        ui.label(&app.lang.dlg_field_timeout);
                         ui.add(
                             egui::Slider::new(&mut profile.connection_timeout_secs, 5..=120)
                                 .suffix(" s"),
@@ -613,9 +616,9 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                 ui.add_space(6.0);
 
                 ui.horizontal(|ui| {
-                    if ui.button(format!("{} Sauvegarder", ph::FLOPPY_DISK)).clicked() { action = DialogAction::Save; }
-                    if ui.button(format!("{} Connecter", ph::PLUG)).clicked()         { action = DialogAction::Connect; }
-                    if ui.button("✕ Annuler").clicked()                               { action = DialogAction::Cancel; }
+                    if ui.button(&app.lang.dlg_save_btn).clicked()    { action = DialogAction::Save; }
+                    if ui.button(&app.lang.dlg_connect_btn).clicked() { action = DialogAction::Connect; }
+                    if ui.button(&app.lang.dlg_cancel_btn).clicked()  { action = DialogAction::Cancel; }
                 });
             }
         });

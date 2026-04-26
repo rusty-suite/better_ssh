@@ -33,7 +33,7 @@ pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
                     )
                     .frame(false)
                 )
-                .on_hover_text("Fermer la session (Ctrl+W)")
+                .on_hover_text(&app.lang.tab_close_hint)
                 .clicked()
                 {
                     to_close = Some(i);
@@ -44,7 +44,7 @@ pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
         }
 
         // Bouton d'ajout d'onglet → ouvre le dialogue de nouveau profil.
-        if ui.button("＋").on_hover_text("Nouvelle connexion (Ctrl+T)").clicked() {
+        if ui.button("＋").on_hover_text(&app.lang.tab_new_hint).clicked() {
             app.sidebar.show_new_profile = true;
         }
     });
