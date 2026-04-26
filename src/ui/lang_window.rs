@@ -105,16 +105,31 @@ pub fn render(app: &mut BetterSshApp, ctx: &Context) {
                             row_text.push_str(&row.lang_code);
                         }
 
-                        let button = egui::SelectableLabel::new(
-                            is_active,
-                            egui::RichText::new(row_text)
-                                .strong_if(is_active)
-                                .small(),
-                        );
-                        let row_resp = ui.add_sized(
-                            [ui.available_width(), 24.0],
-                            button,
-                        );
+                        let desired_size = egui::vec2(ui.available_width(), 24.0);
+                        let (rect, row_resp) = ui.allocate_exact_size(desired_size, egui::Sense::click());
+                        let visuals = ui.style().interact_selectable(&row_resp, is_active);
+                        let text_color = if is_active {
+                            visuals.text_color()
+                        } else {
+                            ui.visuals().text_color()
+                        };
+
+                        if ui.is_rect_visible(rect) {
+                            ui.painter().rect(
+                                rect,
+                                visuals.rounding,
+                                visuals.bg_fill,
+                                visuals.bg_stroke,
+                            );
+                            let text_pos = egui::pos2(rect.left() + 6.0, rect.center().y);
+                            ui.painter().text(
+                                text_pos,
+                                egui::Align2::LEFT_CENTER,
+                                row_text,
+                                egui::TextStyle::Small.resolve(ui.style()),
+                                text_color,
+                            );
+                        }
 
                         if row_resp.clicked() {
                             if can_select_local || can_select_remote {
