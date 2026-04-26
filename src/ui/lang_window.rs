@@ -32,24 +32,20 @@ pub fn render(app: &mut BetterSshApp, ctx: &Context) {
                     .weak(),
             );
             ui.label(egui::RichText::new(active_name).strong());
-            ui.add_space(4.0);
+            ui.add_space(6.0);
 
-            ui.horizontal(|ui| {
-                ui.colored_label(status_color, egui::RichText::new(status_text).small());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button(&app.lang.lang_refresh_btn)
-                    .on_hover_text(&app.lang.lang_refresh_btn_hint)
-                    .clicked()
-                    {
-                        app.refresh_remote_langs();
-                    }
-                });
-            });
+            ui.colored_label(status_color, egui::RichText::new(status_text).small());
 
             ui.separator();
+            ui.label(
+                egui::RichText::new(&app.lang.lang_local_section)
+                    .small()
+                    .weak(),
+            );
+            ui.add_space(4.0);
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
-                .max_height(240.0)
+                .max_height(250.0)
                 .show(ui, |ui| {
                     if rows.is_empty() {
                         ui.label(
@@ -62,8 +58,11 @@ pub fn render(app: &mut BetterSshApp, ctx: &Context) {
                     for row in &rows {
                         let is_active = row.stem == app.lang_chosen;
                         let status = app.lang_repo_status.clone();
-                        let busy = matches!(status, LangRepoStatus::Loading | LangRepoStatus::Downloading(_));
                         let downloading_this = matches!(status, LangRepoStatus::Downloading(ref stem) if stem == &row.stem);
+                        let can_select_local = row.is_available && !downloading_this;
+                        let can_select_remote = row.is_repo
+                            && !row.is_available
+                            && !matches!(status, LangRepoStatus::Loading | LangRepoStatus::Downloading(_));
 
                         let row_resp = egui::Frame::none()
                             .fill(if is_active {
@@ -81,14 +80,8 @@ pub fn render(app: &mut BetterSshApp, ctx: &Context) {
                                     if row.is_default {
                                         ui.label(egui::RichText::new(&app.lang.lang_badge_default).small().weak());
                                     }
-                                    if row.is_builtin {
-                                        ui.label(egui::RichText::new(&app.lang.lang_builtin_badge).small().weak());
-                                    }
                                     if row.is_local {
                                         ui.label(egui::RichText::new(&app.lang.lang_local_badge).small().weak());
-                                    }
-                                    if row.is_downloaded {
-                                        ui.label(egui::RichText::new(&app.lang.lang_downloaded_badge).small().weak());
                                     }
                                     if row.is_repo {
                                         ui.label(egui::RichText::new(&app.lang.lang_remote_badge).small().weak());
@@ -106,8 +99,8 @@ pub fn render(app: &mut BetterSshApp, ctx: &Context) {
                             })
                             .inner;
 
-                        if row_resp.clicked() && !busy {
-                            if (row.is_available || row.is_repo) && !downloading_this {
+                        if row_resp.clicked() {
+                            if can_select_local || can_select_remote {
                                 app.select_lang(row.stem.clone());
                             }
                         }
@@ -123,25 +116,27 @@ pub fn render(app: &mut BetterSshApp, ctx: &Context) {
                     .small()
                     .weak(),
             );
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(lang_dir.display().to_string())
-                        .monospace()
-                        .small(),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button(&app.lang.lang_open_btn)
-                        .on_hover_text(&app.lang.lang_open_btn_hint)
-                        .clicked()
-                    {
-                        let _ = std::fs::create_dir_all(&lang_dir);
-                        open_in_explorer(&lang_dir);
-                    }
-                });
-            });
+            ui.label(
+                egui::RichText::new(lang_dir.display().to_string())
+                    .monospace()
+                    .small(),
+            );
 
             ui.separator();
             ui.horizontal(|ui| {
+                if ui.button(&app.lang.lang_open_btn)
+                    .on_hover_text(&app.lang.lang_open_btn_hint)
+                    .clicked()
+                {
+                    let _ = std::fs::create_dir_all(&lang_dir);
+                    open_in_explorer(&lang_dir);
+                }
+                if ui.button(&app.lang.lang_refresh_btn)
+                    .on_hover_text(&app.lang.lang_refresh_btn_hint)
+                    .clicked()
+                {
+                    app.refresh_remote_langs();
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button(&app.lang.lang_close_btn).clicked() {
                         close_requested = true;
@@ -184,9 +179,7 @@ struct LangRow {
     name: String,
     lang_code: String,
     is_available: bool,
-    is_builtin: bool,
     is_local: bool,
-    is_downloaded: bool,
     is_repo: bool,
     is_default: bool,
 }
@@ -197,9 +190,7 @@ fn merged_lang_rows(app: &BetterSshApp) -> Vec<LangRow> {
         name: file.name.clone(),
         lang_code: file.lang_code.clone(),
         is_available: true,
-        is_builtin: !file.from_disk,
         is_local: file.from_disk,
-        is_downloaded: false,
         is_repo: false,
         is_default: file.stem == i18n::detect_system_lang_stem(),
     }).collect();
@@ -207,18 +198,13 @@ fn merged_lang_rows(app: &BetterSshApp) -> Vec<LangRow> {
     for remote in &app.remote_lang_files {
         if let Some(existing) = rows.iter_mut().find(|row| row.stem == remote.stem) {
             existing.is_repo = true;
-            if existing.is_local {
-                existing.is_downloaded = true;
-            }
         } else {
             rows.push(LangRow {
                 stem: remote.stem.clone(),
                 name: remote.name.clone(),
                 lang_code: remote.lang_code.clone(),
                 is_available: false,
-                is_builtin: false,
                 is_local: false,
-                is_downloaded: false,
                 is_repo: true,
                 is_default: remote.stem == i18n::detect_system_lang_stem(),
             });
