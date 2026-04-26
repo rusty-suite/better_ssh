@@ -63,41 +63,33 @@ pub fn render(app: &mut BetterSshApp, ctx: &Context) {
                         let can_select_remote = row.is_repo
                             && !row.is_available
                             && !matches!(status, LangRepoStatus::Loading | LangRepoStatus::Downloading(_));
+                        let mut row_text = row.name.clone();
 
-                        let row_resp = egui::Frame::none()
-                            .fill(if is_active {
-                                ui.visuals().selection.bg_fill
-                            } else {
-                                egui::Color32::TRANSPARENT
-                            })
-                            .inner_margin(egui::Margin::symmetric(6.0, 4.0))
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        egui::RichText::new(&row.name)
-                                            .strong_if(is_active),
-                                    );
-                                    if row.is_default {
-                                        ui.label(egui::RichText::new(&app.lang.lang_badge_default).small().weak());
-                                    }
-                                    if row.is_local {
-                                        ui.label(egui::RichText::new(&app.lang.lang_local_badge).small().weak());
-                                    }
-                                    if row.is_repo {
-                                        ui.label(egui::RichText::new(&app.lang.lang_remote_badge).small().weak());
-                                    }
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        ui.label(
-                                            egui::RichText::new(&row.lang_code)
-                                                .monospace()
-                                                .small()
-                                                .weak(),
-                                        );
-                                    });
-                                })
-                                .response
-                            })
-                            .inner;
+                        if row.is_default {
+                            row_text.push(' ');
+                            row_text.push_str(&app.lang.lang_badge_default);
+                        }
+                        if row.is_local {
+                            row_text.push(' ');
+                            row_text.push_str(&app.lang.lang_local_badge);
+                        }
+                        if row.is_repo {
+                            row_text.push(' ');
+                            row_text.push_str(&app.lang.lang_remote_badge);
+                        }
+                        if !row.lang_code.is_empty() {
+                            row_text.push_str("  ");
+                            row_text.push_str(&row.lang_code);
+                        }
+
+                        let button = egui::SelectableLabel::new(
+                            is_active,
+                            egui::RichText::new(row_text).strong_if(is_active),
+                        );
+                        let row_resp = ui.add_sized(
+                            [ui.available_width(), 28.0],
+                            button,
+                        );
 
                         if row_resp.clicked() {
                             if can_select_local || can_select_remote {
