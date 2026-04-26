@@ -597,7 +597,10 @@ impl BetterSshApp {
     }
 
     pub fn ensure_remote_langs_loaded(&mut self) {
-        if self.remote_lang_files.is_empty() && self.lang_remote_rx.is_none() {
+        if self.remote_lang_files.is_empty()
+            && self.lang_remote_rx.is_none()
+            && matches!(self.lang_repo_status, LangRepoStatus::Idle)
+        {
             self.refresh_remote_langs();
         }
     }
