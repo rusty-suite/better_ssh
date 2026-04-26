@@ -473,7 +473,8 @@ pub fn list_remote_lang_files() -> anyhow::Result<Vec<LangFile>> {
 /// Télécharge `{stem}.toml` depuis GitHub et l'écrit dans `{work_dir}/lang/`.
 /// Retourne `Ok(texte)` si réussi.
 pub fn download_lang(work_dir: &PathBuf, stem: &str) -> anyhow::Result<String> {
-    let url = format!("{GITHUB_RAW}/{stem}.toml");
+    let file_name = embedded_file_name(stem);
+    let url = format!("{GITHUB_RAW}/{file_name}");
     let text = ureq::get(&url)
         .timeout(std::time::Duration::from_secs(10))
         .call()?
