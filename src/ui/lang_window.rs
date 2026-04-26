@@ -251,7 +251,7 @@ fn repo_status_line(app: &BetterSshApp) -> (String, egui::Color32) {
     match &app.lang_repo_status {
         LangRepoStatus::Idle => (
             format!("GitHub - {} language(s) repo", app.remote_lang_files.len()),
-            egui::Color32::from_rgb(120, 120, 120),
+            egui::Color32::from_rgb(80, 180, 100),
         ),
         LangRepoStatus::Loading => (
             app.lang.lang_remote_loading.clone(),
@@ -259,7 +259,7 @@ fn repo_status_line(app: &BetterSshApp) -> (String, egui::Color32) {
         ),
         LangRepoStatus::Offline => (
             app.lang.lang_status_offline.clone(),
-            egui::Color32::from_rgb(220, 160, 80),
+            egui::Color32::from_rgb(220, 80, 80),
         ),
         LangRepoStatus::Error(err) => (
             format!("{}: {}", app.lang.lang_remote_error, err),
