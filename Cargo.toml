@@ -48,6 +48,8 @@ secrecy = { version = "0.8", features = ["serde"] }
 zeroize = "1"
 crossbeam-channel = "0.5"
 image = { version = "0.25", features = ["png"] }
+sys-locale = "0.3"
+ureq = { version = "2", features = ["tls"] }
 
 [dev-dependencies]
 tempfile = "3"

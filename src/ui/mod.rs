@@ -3,6 +3,7 @@
 /// barre de statut, et fenêtres modales (préférences, snippets, scan réseau).
 pub mod file_explorer;
 pub mod icons;
+pub mod lang_window;
 pub mod network_scan;
 pub mod sidebar;
 pub mod snippets;
@@ -27,6 +28,9 @@ pub fn render(app: &mut BetterSshApp, ctx: &Context) {
     render_main_area(app, ctx);
     render_status_bar(app, ctx);
     render_modals(app, ctx);
+    if app.show_lang_window {
+        lang_window::render(app, ctx);
+    }
 }
 
 // ─── Barre supérieure ─────────────────────────────────────────────────────────
@@ -41,24 +45,37 @@ fn render_top_bar(app: &mut BetterSshApp, ctx: &Context) {
             // Barre d'onglets (une session par onglet).
             tab_bar::render(app, ui);
 
-            // Contrôles à droite : thème + préférences
+            // Contrôles à droite : thème + préférences + langue
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let label = if app.dark_mode {
-                    format!("{} Clair", ph::SUN)
+                let theme_label = if app.dark_mode {
+                    format!("{} {}", ph::SUN, app.lang.topbar_theme_light)
                 } else {
-                    format!("{} Sombre", ph::MOON)
+                    format!("{} {}", ph::MOON, app.lang.topbar_theme_dark)
                 };
-                if ui.button(label).on_hover_text("Basculer le thème (clair/sombre)").clicked() {
+                if ui.button(theme_label)
+                    .on_hover_text(&app.lang.topbar_theme_hint)
+                    .clicked()
+                {
                     app.dark_mode = !app.dark_mode;
                     apply_theme(ctx, app.dark_mode);
                 }
-                if ui.button(format!("{} Préférences", ph::GEAR)).clicked() {
+                if ui.button(format!("{} {}", ph::GEAR, app.lang.topbar_prefs)).clicked() {
                     app.show_preferences = !app.show_preferences;
                 }
-                if ui.button(format!("{} Scanner", ph::MAGNIFYING_GLASS))
-                    .on_hover_text("Scan réseau SSH (F5)").clicked()
+                if ui.button(format!("{} {}", ph::MAGNIFYING_GLASS, app.lang.topbar_scanner))
+                    .on_hover_text(&app.lang.topbar_scanner_hint)
+                    .clicked()
                 {
                     app.show_network_scan = !app.show_network_scan;
+                }
+                let lang_hint = crate::i18n::Lang::fmt_lang(
+                    &app.lang.topbar_lang_hint, &app.lang_chosen,
+                );
+                if ui.button(format!("{} {}", ph::GLOBE, app.lang.lang_win_title))
+                    .on_hover_text(lang_hint)
+                    .clicked()
+                {
+                    app.show_lang_window = !app.show_lang_window;
                 }
             });
         });
@@ -84,7 +101,7 @@ fn render_main_area(app: &mut BetterSshApp, ctx: &Context) {
     egui::CentralPanel::default().show(ctx, |ui| {
         if app.tabs.is_empty() {
             // Pas de session ouverte → page d'accueil avec raccourcis.
-            render_welcome(ui);
+            render_welcome(app, ui);
             return;
         }
         let idx = app.active_tab;
@@ -111,7 +128,7 @@ fn render_main_area(app: &mut BetterSshApp, ctx: &Context) {
                 .default_width(360.0)
                 .show_inside(ui, |ui| {
                     sftp_req = file_explorer::render(
-                        &mut app.tabs[idx].file_explorer, ui, &username, current_uid,
+                        &mut app.tabs[idx].file_explorer, ui, &app.lang, &username, current_uid,
                     );
                 });
             // Traitement de la requête SFTP retournée par l'explorateur.
@@ -272,18 +289,11 @@ fn render_modals(app: &mut BetterSshApp, ctx: &Context) {
 // ─── Écran d'accueil ──────────────────────────────────────────────────────────
 
 /// Affiché quand aucun onglet n'est ouvert. Liste les raccourcis principaux.
-fn render_welcome(ui: &mut egui::Ui) {
+fn render_welcome(app: &BetterSshApp, ui: &mut egui::Ui) {
     ui.centered_and_justified(|ui| {
         ui.vertical_centered(|ui| {
             ui.add_space(60.0);
-            ui.heading("Bienvenue dans BetterSSH");
-            ui.add_space(14.0);
-            ui.label(
-                egui::RichText::new(
-                    "Sélectionnez un profil dans la barre latérale\nou appuyez sur Ctrl+T pour créer une nouvelle connexion."
-                )
-                .weak(),
-            );
+            ui.heading(&app.lang.welcome_title);
             ui.add_space(28.0);
 
             egui::Frame::none()
@@ -294,14 +304,14 @@ fn render_welcome(ui: &mut egui::Ui) {
                         .num_columns(2)
                         .spacing([24.0, 6.0])
                         .show(ui, |ui| {
-                            shortcut(ui, "Ctrl+T",       "Nouvelle connexion");
+                            shortcut(ui, &app.lang.welcome_new_hint,  &app.lang.welcome_new);
+                            shortcut(ui, &app.lang.welcome_scan_hint, &app.lang.welcome_scan);
                             shortcut(ui, "Ctrl+W",       "Fermer l'onglet");
                             shortcut(ui, "Ctrl+Tab",     "Onglet suivant");
                             shortcut(ui, "F2",           "Explorateur SFTP");
                             shortcut(ui, "F3",           "Moniteur système");
                             shortcut(ui, "F4",           "Snippets");
-                            shortcut(ui, "F5",           "Scan réseau");
-                            shortcut(ui, "Ctrl+,",       "Préférences");
+                            shortcut(ui, "Ctrl+,",       &app.lang.topbar_prefs);
                             shortcut(ui, "Ctrl+Scroll",  "Zoom police terminal");
                             shortcut(ui, "Ctrl+R",       "Recherche historique");
                         });
