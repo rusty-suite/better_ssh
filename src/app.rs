@@ -3,7 +3,8 @@
 /// panneau de scan réseau, préférences, etc.
 use crate::config::{AppConfig, AuthMethod, ConnectionProfile, Vault};
 use crate::network::scanner::ScanResult;
-use crate::ssh::session::{SessionCommand, SessionEvent, SshSession};
+use crate::network::telnet::TelnetSession;
+use crate::ssh::session::{SessionEvent, SshSession};
 use crate::ui::{
     file_explorer::FileExplorerState,
     network_scan::NetworkScanState,
@@ -13,6 +14,50 @@ use crate::ui::{
     terminal::TerminalState,
 };
 use egui::{Context, FontId, TextStyle};
+
+// ─── Session unifiée (SSH ou Telnet) ─────────────────────────────────────────
+
+/// Enveloppe une session SSH ou Telnet derrière une interface commune.
+/// Permet à Tab d'héberger les deux types sans modifier la logique d'affichage.
+pub enum AnySession {
+    Ssh(SshSession),
+    Telnet(TelnetSession),
+}
+
+impl AnySession {
+    pub fn send_input(&self, data: Vec<u8>) {
+        match self {
+            Self::Ssh(s)     => s.send_input(data),
+            Self::Telnet(t)  => t.send_input(data),
+        }
+    }
+    pub fn try_recv(&self) -> Option<SessionEvent> {
+        match self {
+            Self::Ssh(s)    => s.try_recv(),
+            Self::Telnet(t) => t.try_recv(),
+        }
+    }
+    pub fn disconnect(&self) {
+        match self {
+            Self::Ssh(s)    => s.disconnect(),
+            Self::Telnet(t) => t.disconnect(),
+        }
+    }
+    /// Upload SFTP (SSH uniquement ; ignoré pour Telnet).
+    pub fn upload_file(&self, content: Vec<u8>, remote_path: String) {
+        if let Self::Ssh(s) = self {
+            s.upload_file(content, remote_path);
+        }
+    }
+}
+
+// ─── Dialogue Telnet ──────────────────────────────────────────────────────────
+
+/// État du dialogue de connexion Telnet.
+pub struct TelnetDialog {
+    pub host: String,
+    pub port: String,
+}
 
 // ─── Dialogue de connexion depuis le scan réseau ──────────────────────────────
 
@@ -47,8 +92,8 @@ pub struct Tab {
     pub id: usize,
     /// Profil de connexion associé à cet onglet.
     pub profile: ConnectionProfile,
-    /// Session SSH active (None si pas encore connecté).
-    pub session: Option<SshSession>,
+    /// Session active — SSH ou Telnet (None si pas encore connecté).
+    pub session: Option<AnySession>,
     /// État du widget terminal (scrollback, parseur ANSI, saisie).
     pub terminal: TerminalState,
     /// État du panneau d'exploration SFTP (arborescence, chemin courant).
@@ -111,6 +156,8 @@ pub struct BetterSshApp {
     pub vault: Option<Vault>,
     /// Dialogue de connexion en attente depuis le scan réseau (None = pas de dialogue).
     pub pending_scan_connect: Option<ScanConnectDialog>,
+    /// Dialogue de connexion Telnet (None = fermé).
+    pub telnet_dialog: Option<TelnetDialog>,
 }
 
 impl BetterSshApp {
@@ -140,6 +187,7 @@ impl BetterSshApp {
             tokio_rt: rt,
             vault: None,
             pending_scan_connect: None,
+            telnet_dialog: None,
         }
     }
 
@@ -151,7 +199,7 @@ impl BetterSshApp {
         let mut tab = Tab::new(id, profile.clone());
 
         // Lance la session SSH en arrière-plan immédiatement.
-        tab.session = Some(SshSession::connect(profile, password));
+        tab.session = Some(AnySession::Ssh(SshSession::connect(profile, password)));
 
         self.tabs.push(tab);
         self.active_tab = self.tabs.len() - 1;
@@ -165,6 +213,21 @@ impl BetterSshApp {
                 self.active_tab = self.tabs.len() - 1;
             }
         }
+    }
+
+    /// Ouvre un onglet Telnet vers `host:port`.
+    pub fn open_telnet(&mut self, host: String, port: u16) {
+        let profile = ConnectionProfile::new(
+            format!("Telnet {}:{}", host, port),
+            host.clone(),
+            "telnet",
+        );
+        let id = self.next_tab_id;
+        self.next_tab_id += 1;
+        let mut tab = Tab::new(id, profile);
+        tab.session = Some(AnySession::Telnet(TelnetSession::connect(host, port)));
+        self.tabs.push(tab);
+        self.active_tab = self.tabs.len() - 1;
     }
 
     /// Persiste la configuration courante sur le disque.
@@ -302,6 +365,11 @@ fn poll_session_events(app: &mut BetterSshApp) {
                 }
                 SessionEvent::FingerprintAlert { host, fingerprint } => {
                     log::warn!("Alerte fingerprint MITM : {host} — {fingerprint}");
+                }
+                SessionEvent::SftpOpResult { ok, message } => {
+                    let color = if ok { "32" } else { "31" };
+                    let text = format!("\r\n\x1b[{}m{}\x1b[0m\r\n", color, message);
+                    tab.terminal.feed(text.as_bytes());
                 }
             }
         }

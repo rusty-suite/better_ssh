@@ -49,6 +49,17 @@ impl Default for TermSpan {
     }
 }
 
+// ─── Transfert de fichier par glisser-déposer ─────────────────────────────────
+
+/// Fichier déposé sur le terminal en attente de confirmation.
+#[derive(Clone)]
+pub struct PendingUpload {
+    pub filename: String,
+    pub content: Vec<u8>,
+    /// Chemin distant éditable dans la popup de confirmation.
+    pub remote_path: String,
+}
+
 // ─── État du terminal ─────────────────────────────────────────────────────────
 
 pub struct TerminalState {
@@ -64,6 +75,10 @@ pub struct TerminalState {
     pub show_history_search: bool,
     /// Requête de recherche tapée dans la popup.
     pub history_search_query: String,
+    /// Fichier glissé-déposé en attente de confirmation de transfert.
+    pub dropped_file: Option<PendingUpload>,
+    /// Upload confirmé par l'utilisateur, prêt à être envoyé par l'appelant.
+    pub upload_confirmed: Option<PendingUpload>,
 
     // ── État interne du parseur ANSI ────────────────────────────────────────
     /// Octets reçus mais pas encore parsés (séquences incomplètes).
@@ -87,6 +102,8 @@ impl TerminalState {
             scroll_to_bottom: true,
             show_history_search: false,
             history_search_query: String::new(),
+            dropped_file: None,
+            upload_confirmed: None,
             ansi_buf: Vec::new(),
             current_fg: Color32::from_rgb(204, 204, 204),
             current_bg: None,
@@ -166,8 +183,6 @@ impl TerminalState {
                             }
                             if end >= self.ansi_buf.len() { break; } // séquence incomplète
                             let cmd = self.ansi_buf[end] as char;
-                            // On ne traite que 'm' (SGR = Select Graphic Rendition).
-                            // Les autres commandes (déplacement curseur, etc.) sont ignorées.
                             let params_str = std::str::from_utf8(&self.ansi_buf[start..end])
                                 .unwrap_or("")
                                 .to_string();
@@ -190,18 +205,14 @@ impl TerminalState {
                     i += 1;
                 }
                 // ── Séquences UTF-8 multi-octets ─────────────────────────────
-                // Décodage complet pour éviter l'affichage de 'Ã©' à la place de 'é'.
                 0xC0..=0xDF => {
-                    // 2 octets (ex: é U+00E9 → 0xC3 0xA9)
                     if i + 2 > self.ansi_buf.len() { break; }
-                    // Copie en String pour libérer le borrow sur ansi_buf avant push_char.
                     let s = std::str::from_utf8(&self.ansi_buf[i..i + 2])
                         .unwrap_or("\u{FFFD}").to_string();
                     for ch in s.chars() { self.push_char(ch); }
                     i += 2;
                 }
                 0xE0..=0xEF => {
-                    // 3 octets (ex: € U+20AC → 0xE2 0x82 0xAC)
                     if i + 3 > self.ansi_buf.len() { break; }
                     let s = std::str::from_utf8(&self.ansi_buf[i..i + 3])
                         .unwrap_or("\u{FFFD}").to_string();
@@ -209,7 +220,6 @@ impl TerminalState {
                     i += 3;
                 }
                 0xF0..=0xF7 => {
-                    // 4 octets (ex: 😀 U+1F600 → 0xF0 0x9F 0x98 0x80)
                     if i + 4 > self.ansi_buf.len() { break; }
                     let s = std::str::from_utf8(&self.ansi_buf[i..i + 4])
                         .unwrap_or("\u{FFFD}").to_string();
@@ -231,7 +241,6 @@ impl TerminalState {
             .collect();
 
         if codes.is_empty() {
-            // ESC[m ou ESC[0m → réinitialise tous les attributs.
             self.reset_attrs();
             return;
         }
@@ -242,7 +251,6 @@ impl TerminalState {
                 0  => self.reset_attrs(),
                 1  => self.current_bold = true,
                 22 => self.current_bold = false,
-                // Couleurs 3/4 bits standard (foreground 30–37 / bright 90–97)
                 30 => self.current_fg = Color32::from_rgb(0, 0, 0),
                 31 => self.current_fg = Color32::from_rgb(205, 49, 49),
                 32 => self.current_fg = Color32::from_rgb(13, 188, 121),
@@ -251,7 +259,7 @@ impl TerminalState {
                 35 => self.current_fg = Color32::from_rgb(188, 63, 188),
                 36 => self.current_fg = Color32::from_rgb(17, 168, 205),
                 37 => self.current_fg = Color32::from_rgb(229, 229, 229),
-                39 => self.current_fg = Color32::from_rgb(204, 204, 204), // défaut
+                39 => self.current_fg = Color32::from_rgb(204, 204, 204),
                 90 => self.current_fg = Color32::from_rgb(102, 102, 102),
                 91 => self.current_fg = Color32::from_rgb(241, 76, 76),
                 92 => self.current_fg = Color32::from_rgb(35, 209, 139),
@@ -260,19 +268,18 @@ impl TerminalState {
                 95 => self.current_fg = Color32::from_rgb(214, 112, 214),
                 96 => self.current_fg = Color32::from_rgb(41, 184, 219),
                 97 => self.current_fg = Color32::from_rgb(255, 255, 255),
-                // Couleur 24 bits : ESC[38;2;R;G;Bm
                 38 if j + 4 < codes.len() && codes[j + 1] == 2 => {
                     self.current_fg =
                         Color32::from_rgb(codes[j + 2], codes[j + 3], codes[j + 4]);
                     j += 4;
                 }
-                _ => {} // code SGR non supporté → ignoré silencieusement
+                _ => {}
             }
             j += 1;
         }
     }
 
-    /// Remet les attributs visuels à leurs valeurs par défaut (fond noir, texte gris).
+    /// Remet les attributs visuels à leurs valeurs par défaut.
     fn reset_attrs(&mut self) {
         self.current_fg = Color32::from_rgb(204, 204, 204);
         self.current_bg = None;
@@ -282,31 +289,103 @@ impl TerminalState {
 
 // ─── Rendu egui ──────────────────────────────────────────────────────────────
 
-/// Retourne les octets à envoyer au serveur SSH si l'utilisateur a validé une saisie,
-/// `None` sinon (pas de saisie cette frame).
+/// Retourne les octets à envoyer au serveur si l'utilisateur a validé une saisie
+/// ou appuyé sur un raccourci de contrôle. `None` sinon.
 pub fn render(state: &mut TerminalState, ui: &mut Ui) -> Option<Vec<u8>> {
-    // Couleur de fond du terminal (inspirée du thème Dracula).
     let bg = Color32::from_rgb(20, 20, 30);
-
-    // Octets à retourner à l'appelant pour envoi SSH (rempli si l'utilisateur valide une saisie).
     let mut to_send: Option<Vec<u8>> = None;
 
-    // Ctrl+Scroll pour ajuster la taille de police à la volée.
+    // ID stable utilisé pour détecter si le champ de saisie du terminal a le focus
+    // (persisté d'une frame à l'autre dans la mémoire egui).
+    let input_id = egui::Id::new("terminal_input_field");
+    let terminal_focused = ui.ctx().memory(|m| m.has_focus(input_id));
+
+    // ── Ctrl+Scroll : zoom police ─────────────────────────────────────────────
     let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
     if ui.input(|i| i.modifiers.ctrl) && scroll_delta != 0.0 {
         state.font_size = (state.font_size + scroll_delta * 0.05).clamp(8.0, 32.0);
     }
 
-    // Ctrl+R → bascule la popup de recherche dans l'historique.
-    if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::R)) {
-        state.show_history_search = !state.show_history_search;
+    // ── Touches de contrôle terminal (uniquement quand le terminal a le focus) ─
+    // Traitées AVANT le TextEdit pour que celui-ci ne les consomme pas.
+    if terminal_focused {
+        // Ctrl+R → bascule la recherche historique
+        if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::R)) {
+            state.show_history_search = !state.show_history_search;
+        }
+        // Ctrl+C → SIGINT (tue le processus en cours)
+        else if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::C)) {
+            state.input.clear();
+            to_send = Some(vec![0x03]);
+        }
+        // Ctrl+D → EOF (ferme le shell / fin de fichier)
+        else if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::D)) {
+            to_send = Some(vec![0x04]);
+        }
+        // Ctrl+Z → SIGTSTP (suspend le processus)
+        else if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::Z)) {
+            to_send = Some(vec![0x1a]);
+        }
+        // Ctrl+L → efface l'écran (équivalent de `clear`)
+        else if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::L)) {
+            to_send = Some(vec![0x0c]);
+        }
+        // Ctrl+U → efface la ligne courante
+        else if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::U)) {
+            state.input.clear();
+            to_send = Some(vec![0x15]);
+        }
+        // Flèche haut → historique précédent (ESC [ A)
+        else if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowUp)) {
+            to_send = Some(b"\x1b[A".to_vec());
+        }
+        // Flèche bas → historique suivant (ESC [ B)
+        else if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowDown)) {
+            to_send = Some(b"\x1b[B".to_vec());
+        }
+        // Tab → complétion automatique côté serveur
+        else if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Tab)) {
+            to_send = Some(vec![0x09]);
+        }
+    }
+
+    // ── Glisser-déposer : détecte les fichiers déposés sur la fenêtre ──────────
+    // Accepte les dépôts pendant que cet onglet est actif.
+    if state.dropped_file.is_none() {
+        let dropped = ui.ctx().input(|i| i.raw.dropped_files.clone());
+        if let Some(file) = dropped.into_iter().next() {
+            // Lit le contenu : soit fourni directement (navigateur), soit lu depuis le chemin.
+            let content_opt: Option<Vec<u8>> = if let Some(bytes) = &file.bytes {
+                Some(bytes.to_vec())
+            } else if let Some(path) = &file.path {
+                std::fs::read(path).ok()
+            } else {
+                None
+            };
+
+            if let Some(content) = content_opt {
+                let filename = file
+                    .path
+                    .as_ref()
+                    .and_then(|p| p.file_name())
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| {
+                        if file.name.is_empty() { "fichier".into() } else { file.name.clone() }
+                    });
+                state.dropped_file = Some(PendingUpload {
+                    remote_path: format!("/tmp/{}", filename),
+                    filename,
+                    content,
+                });
+            }
+        }
     }
 
     egui::Frame::none()
         .fill(bg)
         .inner_margin(egui::Margin::same(6.0))
         .show(ui, |ui| {
-            // ── Barre de recherche historique (si active) ─────────────────────
+            // ── Barre de recherche historique ────────────────────────────────
             if state.show_history_search {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("(reverse-i-search):").color(Color32::YELLOW));
@@ -328,7 +407,6 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui) -> Option<Vec<u8>> {
                 .show(ui, |ui| {
                     ui.set_min_size(available);
 
-                    // Affiche les lignes complètes du scrollback.
                     for line in &state.lines {
                         ui.horizontal_wrapped(|ui| {
                             for span in &line.spans {
@@ -338,14 +416,12 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui) -> Option<Vec<u8>> {
                                 if span.bold { rt = rt.strong(); }
                                 ui.label(rt);
                             }
-                            // Ligne vide → espace pour maintenir la hauteur de ligne.
                             if line.spans.is_empty() {
                                 ui.label(egui::RichText::new(" ").font(font_id.clone()));
                             }
                         });
                     }
 
-                    // Affiche la ligne en cours (pas encore terminée par \n).
                     if !state.current_line.is_empty() {
                         ui.horizontal_wrapped(|ui| {
                             for span in &state.current_line {
@@ -369,18 +445,19 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui) -> Option<Vec<u8>> {
                 );
                 let response = ui.add(
                     egui::TextEdit::singleline(&mut state.input)
+                        .id(input_id)
                         .font(egui::TextStyle::Monospace)
                         .desired_width(f32::INFINITY)
                         .frame(false)
                         .text_color(Color32::WHITE),
                 );
-                // Maintient le focus sur la saisie pour capturer les touches.
                 if !response.has_focus() {
                     response.request_focus();
                 }
 
-                // Entrée validée → envoie la ligne au serveur (avec \n) et vide le champ.
-                if response.has_focus()
+                // Entrée → envoie la commande si aucun raccourci de contrôle n'a déjà été capturé.
+                if to_send.is_none()
+                    && response.has_focus()
                     && ui.input(|i| i.key_pressed(Key::Enter))
                 {
                     let mut cmd = state.input.clone();
@@ -391,5 +468,60 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui) -> Option<Vec<u8>> {
             });
         });
 
+    // ── Popup de confirmation de transfert de fichier ─────────────────────────
+    if let Some(pending) = &mut state.dropped_file {
+        let mut confirmed = false;
+        let mut cancelled = false;
+
+        egui::Window::new("📤 Transfert de fichier")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ui.ctx(), |ui| {
+                egui::Grid::new("upload_grid")
+                    .num_columns(2)
+                    .spacing([8.0, 6.0])
+                    .show(ui, |ui| {
+                        ui.strong("Fichier :");
+                        ui.label(&pending.filename);
+                        ui.end_row();
+
+                        ui.strong("Taille :");
+                        ui.label(format_size(pending.content.len()));
+                        ui.end_row();
+
+                        ui.strong("Destination :");
+                        ui.text_edit_singleline(&mut pending.remote_path);
+                        ui.end_row();
+                    });
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                ui.horizontal(|ui| {
+                    if ui.button("✅ Transférer").clicked() { confirmed = true; }
+                    if ui.button("✕ Annuler").clicked()     { cancelled = true; }
+                });
+            });
+
+        if confirmed {
+            state.upload_confirmed = state.dropped_file.take();
+        } else if cancelled {
+            state.dropped_file = None;
+        }
+    }
+
     to_send
+}
+
+/// Formate une taille en octets en chaîne lisible (Ko / Mo).
+fn format_size(bytes: usize) -> String {
+    if bytes < 1024 {
+        format!("{} o", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} Ko", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.1} Mo", bytes as f64 / (1024.0 * 1024.0))
+    }
 }

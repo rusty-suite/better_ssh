@@ -45,11 +45,19 @@ pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
     });
     ui.add_space(4.0);
 
-    // ── Bouton nouveau profil ─────────────────────────────────────────────────
-    if ui.button("＋ Nouvelle connexion").clicked() {
-        app.sidebar.edit_profile = Some(ConnectionProfile::default());
-        app.sidebar.show_new_profile = true;
-    }
+    // ── Boutons de connexion ──────────────────────────────────────────────────
+    ui.horizontal(|ui| {
+        if ui.button("＋ SSH").on_hover_text("Nouvelle connexion SSH (Ctrl+T)").clicked() {
+            app.sidebar.edit_profile = Some(ConnectionProfile::default());
+            app.sidebar.show_new_profile = true;
+        }
+        if ui.button("⌨ Telnet").on_hover_text("Connexion Telnet brute").clicked() {
+            app.telnet_dialog = Some(crate::app::TelnetDialog {
+                host: String::new(),
+                port: "23".to_string(),
+            });
+        }
+    });
 
     ui.separator();
     ui.add_space(4.0);
