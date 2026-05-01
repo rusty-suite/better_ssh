@@ -46,12 +46,18 @@ pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
     ui.add_space(4.0);
 
     // ── Boutons de connexion ──────────────────────────────────────────────────
+    // ATTENTION aux emoji : utiliser uniquement des caractères présents dans
+    // Noto Emoji (police par défaut d'egui). Les blocs Unicode "Miscellaneous
+    // Technical" (U+2300–U+23FF, ex: ⌨ U+2328) ne sont PAS dans Noto Emoji
+    // → case vide affichée. Préférer du texte ASCII ou des emoji standards
+    // (U+1F300 et suivants, ex: 📡 🔍 🗑 ✏ 📋).
     ui.horizontal(|ui| {
-        if ui.button("＋ SSH").on_hover_text("Nouvelle connexion SSH (Ctrl+T)").clicked() {
+        if ui.button("+ SSH").on_hover_text("Nouvelle connexion SSH (Ctrl+T)").clicked() {
             app.sidebar.edit_profile = Some(ConnectionProfile::default());
             app.sidebar.show_new_profile = true;
         }
-        if ui.button("⌨ Telnet").on_hover_text("Connexion Telnet brute").clicked() {
+        // ">_" est ASCII pur : pas de risque de glyphe manquant.
+        if ui.button(">_ Telnet").on_hover_text("Connexion Telnet brute").clicked() {
             app.telnet_dialog = Some(crate::app::TelnetDialog {
                 host: String::new(),
                 port: "23".to_string(),
@@ -294,7 +300,7 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
             ui.horizontal(|ui| {
                 if ui.button("💾 Sauvegarder").clicked()    { action = DialogAction::Save; }
                 if ui.button("🔌 Connecter").clicked()      { action = DialogAction::Connect; }
-                if ui.button("✕ Annuler").clicked()         { action = DialogAction::Cancel; }
+                if ui.button("Annuler").clicked()             { action = DialogAction::Cancel; }
             });
         });
 
