@@ -162,6 +162,13 @@ fn render_main_area(app: &mut BetterSshApp, ctx: &Context) {
                 session.send_input(bytes);
             }
         }
+
+        // Upload SFTP confirmé dans la popup de transfert de fichier.
+        if let Some(upload) = app.tabs[idx].terminal.upload_confirmed.take() {
+            if let Some(session) = &app.tabs[idx].session {
+                session.upload_file(upload.content, upload.remote_path);
+            }
+        }
     });
 }
 
@@ -202,6 +209,10 @@ fn render_status_bar(app: &mut BetterSshApp, ctx: &Context) {
 fn render_modals(app: &mut BetterSshApp, ctx: &Context) {
     if app.pending_scan_connect.is_some() {
         render_scan_connect_dialog(app, ctx);
+    }
+
+    if app.telnet_dialog.is_some() {
+        render_telnet_dialog(app, ctx);
     }
 
     if app.show_preferences {
@@ -516,6 +527,73 @@ fn render_preferences(app: &mut BetterSshApp, ctx: &Context) {
     app.show_preferences = open;
 }
 
+// ─── Dialogue Telnet ──────────────────────────────────────────────────────────
+
+/// Fenêtre modale de saisie hôte/port pour une connexion Telnet brute.
+fn render_telnet_dialog(app: &mut BetterSshApp, ctx: &Context) {
+    let mut dlg = match app.telnet_dialog.take() {
+        Some(d) => d,
+        None => return,
+    };
+
+    let mut do_connect = false;
+    let mut do_cancel  = false;
+
+    // Titre sans emoji hors-Noto (voir commentaire dans sidebar.rs).
+    egui::Window::new(">_ Connexion Telnet")
+        .default_size([320.0, 160.0])
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            egui::Grid::new("telnet_dialog_grid")
+                .num_columns(2)
+                .spacing([8.0, 8.0])
+                .show(ui, |ui| {
+                    ui.label("Hôte :");
+                    ui.text_edit_singleline(&mut dlg.host)
+                        .on_hover_text("Adresse IP ou nom DNS");
+                    ui.end_row();
+
+                    ui.label("Port :");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut dlg.port)
+                            .desired_width(80.0)
+                            .hint_text("23"),
+                    );
+                    ui.end_row();
+                });
+
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(4.0);
+
+            ui.horizontal(|ui| {
+                let port_ok = dlg.port.parse::<u16>().is_ok();
+                let can_connect = !dlg.host.is_empty() && port_ok;
+
+                ui.add_enabled_ui(can_connect, |ui| {
+                    if ui.button(">_ Connecter").clicked() {
+                        do_connect = true;
+                    }
+                });
+                if ui.button("Annuler").clicked() {
+                    do_cancel = true;
+                }
+            });
+        });
+
+    if do_cancel { return; }
+    if do_connect {
+        let host = dlg.host.clone();
+        let port: u16 = dlg.port.parse().unwrap_or(23);
+        app.open_telnet(host, port);
+        return;
+    }
+    // Pas d'action → maintient le dialogue ouvert.
+    app.telnet_dialog = Some(dlg);
+}
+
 // ─── Dialogue de connexion depuis le scan réseau ──────────────────────────────
 
 /// Fenêtre modale de saisie des identifiants affichée après "Connecter" dans le scanner.
@@ -716,7 +794,7 @@ fn render_scan_connect_dialog(app: &mut BetterSshApp, ctx: &Context) {
                         do_connect = true;
                     }
                 });
-                if ui.button("✕ Annuler").clicked() {
+                if ui.button("Annuler").clicked() {
                     do_cancel = true;
                 }
             });

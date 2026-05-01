@@ -60,8 +60,8 @@ pub struct Tab {
     pub id: usize,
     /// Profil de connexion associé à cet onglet.
     pub profile: ConnectionProfile,
-    /// Session SSH active (None si pas encore connecté).
-    pub session: Option<SshSession>,
+    /// Session active — SSH ou Telnet (None si pas encore connecté).
+    pub session: Option<AnySession>,
     /// État du widget terminal (scrollback, parseur ANSI, saisie).
     pub terminal: TerminalState,
     /// État du panneau d'exploration SFTP (arborescence, chemin courant).
@@ -220,7 +220,7 @@ impl BetterSshApp {
         }
 
         // Lance la session SSH en arrière-plan immédiatement.
-        tab.session = Some(SshSession::connect(profile, password));
+        tab.session = Some(AnySession::Ssh(SshSession::connect(profile, password)));
 
         self.tabs.push(tab);
         self.active_tab = self.tabs.len() - 1;
@@ -234,6 +234,21 @@ impl BetterSshApp {
                 self.active_tab = self.tabs.len() - 1;
             }
         }
+    }
+
+    /// Ouvre un onglet Telnet vers `host:port`.
+    pub fn open_telnet(&mut self, host: String, port: u16) {
+        let profile = ConnectionProfile::new(
+            format!("Telnet {}:{}", host, port),
+            host.clone(),
+            "telnet",
+        );
+        let id = self.next_tab_id;
+        self.next_tab_id += 1;
+        let mut tab = Tab::new(id, profile);
+        tab.session = Some(AnySession::Telnet(TelnetSession::connect(host, port)));
+        self.tabs.push(tab);
+        self.active_tab = self.tabs.len() - 1;
     }
 
     /// Persiste la configuration courante sur le disque.
