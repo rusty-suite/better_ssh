@@ -1,7 +1,6 @@
 /// Gestionnaire de snippets / macros de commandes.
 /// Permet de sauvegarder des commandes fréquentes avec nom, description et tags.
 /// Les snippets épinglés apparaissent en tête de liste.
-use crate::ui::icons as ph;
 use egui::Ui;
 use serde::{Deserialize, Serialize};
 
@@ -76,7 +75,7 @@ impl SnippetsState {
 pub fn render(state: &mut SnippetsState, ui: &mut Ui) {
     // ── En-tête ───────────────────────────────────────────────────────────────
     ui.horizontal(|ui| {
-        ui.heading(format!("{} Snippets", ph::LIGHTNING));
+        ui.heading("⚡ Snippets");
         ui.label(
             egui::RichText::new(format!("({} commandes)", state.snippets.len()))
                 .small().weak(),
@@ -92,7 +91,7 @@ pub fn render(state: &mut SnippetsState, ui: &mut Ui) {
 
     // ── Barre de recherche ────────────────────────────────────────────────────
     ui.horizontal(|ui| {
-        ui.label(ph::MAGNIFYING_GLASS);
+        ui.label("🔍");
         ui.text_edit_singleline(&mut state.search)
             .on_hover_text("Filtrer par nom ou commande");
     });

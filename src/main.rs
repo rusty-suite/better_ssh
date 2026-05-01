@@ -1,12 +1,9 @@
 #![allow(dead_code, unused_imports, unused_variables, unused_mut)]
-#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod app;
 mod assets;
 mod config;
 mod history;
-mod i18n;
-mod logging;
 mod network;
 mod ssh;
 mod ui;
@@ -16,10 +13,7 @@ use eframe::NativeOptions;
 use egui::ViewportBuilder;
 
 fn main() -> Result<()> {
-    let log_path = config::AppConfig::config_dir().join("betterssh.log");
-    if let Err(e) = logging::setup(log_path) {
-        eprintln!("Avertissement : impossible d'initialiser le journal : {e}");
-    }
+    env_logger::init();
 
     // Build the tokio runtime and enter it so that tokio::spawn works from the
     // egui update thread and Handle::current() is valid in BetterSshApp::new.
