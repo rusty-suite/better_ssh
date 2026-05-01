@@ -1,7 +1,6 @@
 /// Barre d'onglets en haut de la zone centrale.
 /// Chaque onglet représente une session SSH avec un indicateur de connexion.
 use crate::app::BetterSshApp;
-use crate::ui::icons as ph;
 use egui::Ui;
 
 pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
@@ -24,17 +23,10 @@ pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
                 if ui.selectable_label(selected, tab.profile.display_name()).clicked() {
                     app.active_tab = i;
                 }
-                // Bouton de fermeture rouge.
-                if ui.add(
-                    egui::Button::new(
-                        egui::RichText::new(ph::X_CIRCLE)
-                            .color(egui::Color32::from_rgb(220, 70, 70))
-                            .strong(),
-                    )
-                    .frame(false)
-                )
-                .on_hover_text(&app.lang.tab_close_hint)
-                .clicked()
+                // Bouton de fermeture discret.
+                if ui.small_button("X")
+                    .on_hover_text("Fermer la session (Ctrl+W)")
+                    .clicked()
                 {
                     to_close = Some(i);
                 }
@@ -44,7 +36,7 @@ pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
         }
 
         // Bouton d'ajout d'onglet → ouvre le dialogue de nouveau profil.
-        if ui.button("＋").on_hover_text(&app.lang.tab_new_hint).clicked() {
+        if ui.button("+").on_hover_text("Nouvelle connexion (Ctrl+T)").clicked() {
             app.sidebar.show_new_profile = true;
         }
     });
