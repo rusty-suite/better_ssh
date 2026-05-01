@@ -2,11 +2,16 @@
 /// Parse les séquences ANSI/VT100 et affiche le texte avec les couleurs correspondantes.
 /// La saisie est gérée par un champ de texte egui en bas du panneau.
 use egui::{Color32, FontId, Key, Modifiers, ScrollArea, Ui};
+use std::collections::VecDeque;
 
 // ─── Constantes ───────────────────────────────────────────────────────────────
 
 const MAX_LINES: usize = 10_000;
 
+/// Nombre maximal de commandes dans l'historique de session (par onglet).
+const MAX_SESSION_HISTORY: usize = 50;
+
+/// Préréglages de taille de police avec leur label et leur taille en points.
 pub const FONT_PRESETS: &[(&str, f32)] = &[
     ("Minuscule",    9.0),
     ("Petite",      11.0),
@@ -69,6 +74,39 @@ pub struct TerminalState {
     /// Upload confirmé, prêt à être envoyé par l'appelant.
     pub upload_confirmed: Option<PendingUpload>,
 
+    /// Historique de session (max 50 commandes). Index 0 = la plus récente.
+    pub session_history: VecDeque<String>,
+    /// true = liste déroulante de l'historique visible (recherche textuelle).
+    pub show_history_dropdown: bool,
+    /// Index sélectionné dans la liste filtrée du dropdown.
+    pub history_dropdown_idx: Option<usize>,
+    /// Index de navigation dans l'historique via flèches Haut/Bas.
+    /// None = saisie courante, Some(0) = commande la plus récente, Some(n) = n-ième.
+    pub history_nav_idx: Option<usize>,
+    /// Texte saisi avant d'entrer en navigation historique (restauré avec flèche Bas).
+    pub history_nav_saved: String,
+    /// true si le champ de saisie invisible avait le focus à la frame précédente.
+    /// Permet de ne consommer les touches que quand le terminal est actif.
+    pub input_focused: bool,
+    /// true = le shell distant gère le buffer (après Tab ou Ctrl+touche).
+    /// Chaque touche est alors envoyée directement au serveur sans buffering local.
+    pub server_managed: bool,
+    /// Écho local des caractères tapés en mode server_managed, effacé dès que le
+    /// serveur répond (via feed). Permet un retour visuel immédiat sans attendre
+    /// l'aller-retour réseau.
+    pub server_mode_echo: String,
+    /// Levé à true quand une commande est ajoutée à session_history.
+    /// L'app lit ce flag pour sauvegarder l'historique dans le vault chiffré.
+    pub pending_history_save: bool,
+    /// Demande de déplacement du curseur TextEdit en fin de texte.
+    /// Levé après toute modification programmatique de `input` (navigation historique).
+    cursor_to_end: bool,
+    /// Position du curseur en caractères Unicode dans `input` (0 = début).
+    /// Mise à jour chaque frame après rendu du TextEdit ; utilisée pour l'affichage.
+    cursor_char_pos: usize,
+
+    // ── État interne du parseur ANSI ────────────────────────────────────────
+    /// Octets reçus mais pas encore parsés (séquences incomplètes).
     ansi_buf: Vec<u8>,
     current_fg: Color32,
     current_bg: Option<Color32>,
@@ -85,10 +123,17 @@ impl TerminalState {
             scroll_to_bottom: true,
             show_history_search: false,
             history_search_query: String::new(),
-            selected_text: String::new(),
-            clipboard_mirror: String::new(),
-            dropped_file: None,
-            upload_confirmed: None,
+            session_history: VecDeque::new(),
+            show_history_dropdown: false,
+            history_dropdown_idx: None,
+            history_nav_idx: None,
+            history_nav_saved: String::new(),
+            input_focused: false,
+            server_managed: false,
+            server_mode_echo: String::new(),
+            pending_history_save: false,
+            cursor_to_end: false,
+            cursor_char_pos: 0,
             ansi_buf: Vec::new(),
             current_fg: Color32::from_rgb(204, 204, 204),
             current_bg: None,
@@ -98,6 +143,9 @@ impl TerminalState {
     }
 
     pub fn feed(&mut self, data: &[u8]) {
+        // Le serveur a répondu → son écho est désormais affiché dans current_line.
+        // L'écho local en mode server_managed est effacé pour éviter le doublon.
+        self.server_mode_echo.clear();
         self.ansi_buf.extend_from_slice(data);
         self.process_buffer();
     }
@@ -134,7 +182,22 @@ impl TerminalState {
         while i < self.ansi_buf.len() {
             let b = self.ansi_buf[i];
             match b {
-                b'\r' => { i += 1; }
+                b'\r' => {
+                    // Lookahead : \r\n = fin de ligne normale (le \n gèrera le saut).
+                    //              \r seul = retour au début de ligne (écrasement en place).
+                    if i + 1 < self.ansi_buf.len() {
+                        if self.ansi_buf[i + 1] != b'\n' {
+                            // Retour chariot seul : on efface la ligne courante pour
+                            // que le prochain contenu la remplace (indicateurs de progression).
+                            self.current_line.clear();
+                        }
+                        i += 1;
+                    } else {
+                        // Dernier octet du buffer : on ne sait pas si un \n suit.
+                        // On attend le prochain chunk plutôt que de décider à l'aveugle.
+                        break;
+                    }
+                }
                 b'\n' => { self.newline(); i += 1; }
                 b'\x08' => {
                     if let Some(span) = self.current_line.last_mut() {
@@ -142,12 +205,15 @@ impl TerminalState {
                     }
                     i += 1;
                 }
+                0x07 => { i += 1; } // BEL → ignoré silencieusement
+                0x0e | 0x0f => { i += 1; } // SO/SI (shift charset) → ignoré
                 0x1b => {
                     if i + 1 >= self.ansi_buf.len() { break; }
                     match self.ansi_buf[i + 1] {
                         b'[' => {
                             let start = i + 2;
                             let mut end = start;
+                            // Les paramètres CSI sont des chiffres, ';', '?' et ' '.
                             while end < self.ansi_buf.len()
                                 && !self.ansi_buf[end].is_ascii_alphabetic()
                             {
@@ -158,12 +224,58 @@ impl TerminalState {
                             let params_str = std::str::from_utf8(&self.ansi_buf[start..end])
                                 .unwrap_or("")
                                 .to_string();
-                            if cmd == 'm' {
-                                self.apply_sgr(&params_str);
+                            match cmd {
+                                'm' => self.apply_sgr(&params_str),
+                                // Erase in Line (K) : efface tout ou partie de la ligne courante.
+                                // Sans curseur précis on simplifie : clear de la ligne.
+                                'K' => { self.current_line.clear(); }
+                                // Erase Display (J) : \e[2J = clear screen complet.
+                                'J' => {
+                                    let n: u32 = params_str
+                                        .trim_start_matches('?')
+                                        .parse().unwrap_or(0);
+                                    if n >= 2 {
+                                        self.lines.clear();
+                                    }
+                                    self.current_line.clear();
+                                }
+                                _ => {} // autres séquences CSI ignorées silencieusement
                             }
                             i = end + 1;
                         }
-                        _ => { i += 2; }
+                        b']' => {
+                            // OSC (Operating System Command) : ESC ] ... BEL | ESC-backslash
+                            // Utilisé par le shell pour mettre à jour le titre de la fenêtre.
+                            // On consomme tout jusqu'au terminateur sans rien afficher.
+                            let mut end = i + 2;
+                            let found = loop {
+                                if end >= self.ansi_buf.len() { break false; }
+                                if self.ansi_buf[end] == 0x07 {
+                                    // BEL termine l'OSC.
+                                    end += 1;
+                                    break true;
+                                }
+                                if self.ansi_buf[end] == 0x1b
+                                    && end + 1 < self.ansi_buf.len()
+                                    && self.ansi_buf[end + 1] == b'\\'
+                                {
+                                    // ST (ESC \) termine l'OSC.
+                                    end += 2;
+                                    break true;
+                                }
+                                end += 1;
+                            };
+                            if found {
+                                i = end;
+                            } else {
+                                break; // séquence incomplète → attend plus de données
+                            }
+                        }
+                        b'(' | b')' | b'*' | b'+' => {
+                            // Désignation de jeu de caractères : ESC ( G — 3 octets.
+                            if i + 2 < self.ansi_buf.len() { i += 3; } else { break; }
+                        }
+                        _ => { i += 2; } // ESC + octet inconnu → ignore les deux
                     }
                 }
                 b'\t' => {
@@ -253,10 +365,101 @@ impl TerminalState {
     }
 }
 
+// ─── Helpers historique ───────────────────────────────────────────────────────
+
+/// Retourne la liste filtrée (newest first, index 0) selon le filtre courant.
+/// Produit des String clonées pour éviter les problèmes de durée de vie.
+fn build_filtered_history(history: &VecDeque<String>, filter: &str) -> Vec<String> {
+    let f = filter.trim().to_lowercase();
+    history.iter()
+        .filter(|e| f.is_empty() || e.to_lowercase().contains(&f))
+        .cloned()
+        .collect()
+}
+
+/// Pousse une commande dans l'historique de session (déduplique les consécutifs).
+/// Retourne true si la commande a été effectivement ajoutée.
+fn push_session_history(history: &mut VecDeque<String>, cmd: &str) -> bool {
+    let trimmed = cmd.trim();
+    if trimmed.is_empty() { return false; }
+    if history.front().map(String::as_str) == Some(trimmed) { return false; }
+    history.push_front(trimmed.to_string());
+    if history.len() > MAX_SESSION_HISTORY {
+        history.pop_back();
+    }
+    true
+}
+
+// ─── Helpers édition ─────────────────────────────────────────────────────────
+
+/// Supprime le dernier mot du buffer local (équivalent readline Ctrl+W).
+/// Respecte les guillemets : efface jusqu'à l'espace non-quoté précédent.
+fn delete_last_word(input: &mut String) {
+    let chars: Vec<char> = input.chars().collect();
+    if chars.is_empty() { return; }
+
+    // Ignore les espaces trailing.
+    let mut end = chars.len();
+    while end > 0 && chars[end - 1] == ' ' {
+        end -= 1;
+    }
+    if end == 0 { input.clear(); return; }
+
+    // Recule jusqu'au premier espace non précédé d'un backslash ou hors guillemets.
+    let mut i = end;
+    let mut in_single = false;
+    let mut in_double = false;
+    // Rescan depuis le début pour connaître l'état des guillemets à position `end`.
+    let mut j = 0;
+    while j < end {
+        match chars[j] {
+            '\'' if !in_double => in_single = !in_single,
+            '"'  if !in_single => in_double = !in_double,
+            '\\' if j + 1 < end => { j += 1; } // skip escaped char
+            _ => {}
+        }
+        j += 1;
+    }
+    // Recule sur le mot (espaces non-quotés = délimiteurs).
+    while i > 0 {
+        let c = chars[i - 1];
+        if c == ' ' && !in_single && !in_double { break; }
+        i -= 1;
+    }
+
+    *input = chars[..i].iter().collect();
+}
+
+/// Extrait la commande tapée depuis le contenu affiché de la ligne courante.
+/// La ligne inclut le prompt shell (`user@host:~$ cmd`) ; on cherche le dernier
+/// marqueur de prompt connu (`$ `, `# `, `% `, `> `) et on prend tout ce qui suit.
+fn extract_cmd_from_line(spans: &[TermSpan]) -> Option<String> {
+    let text: String = spans.iter().map(|s| s.text.as_str()).collect();
+    let text = text.trim_end(); // retire l'espace trailing éventuel ajouté par readline
+    // Cherche la position la plus à droite parmi les marqueurs de prompt courants.
+    let markers = ["$ ", "# ", "% ", "> "];
+    let best = markers.iter().filter_map(|m| {
+        text.rfind(m).map(|pos| pos + m.len())
+    }).max();
+    if let Some(start) = best {
+        let cmd = text[start..].trim().to_string();
+        if !cmd.is_empty() { return Some(cmd); }
+    }
+    // Aucun marqueur : retourne la ligne entière trimée (prompt inconnu).
+    let fallback = text.trim().to_string();
+    if !fallback.is_empty() { Some(fallback) } else { None }
+}
+
 // ─── Rendu egui ──────────────────────────────────────────────────────────────
 
-pub fn render(state: &mut TerminalState, ui: &mut Ui) -> Option<Vec<u8>> {
+/// Retourne les octets à envoyer au serveur SSH si l'utilisateur a validé une saisie,
+/// `None` sinon (pas de saisie cette frame).
+/// `modal_open` : si true, le terminal ne vole pas le focus (un dialogue est ouvert).
+pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Option<Vec<u8>> {
+    // Couleur de fond du terminal (inspirée du thème Dracula).
     let bg = Color32::from_rgb(20, 20, 30);
+
+    // Octets à retourner à l'appelant pour envoi SSH.
     let mut to_send: Option<Vec<u8>> = None;
 
     let input_id = egui::Id::new("terminal_input_field");
@@ -292,47 +495,252 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui) -> Option<Vec<u8>> {
         }
     }
 
-    // ── Glisser-déposer ───────────────────────────────────────────────────────
-    if state.dropped_file.is_none() {
-        let dropped = ui.ctx().input(|i| i.raw.dropped_files.clone());
-        if let Some(file) = dropped.into_iter().next() {
-            let content_opt: Option<Vec<u8>> = if let Some(bytes) = &file.bytes {
-                Some(bytes.to_vec())
-            } else if let Some(path) = &file.path {
-                std::fs::read(path).ok()
-            } else {
-                None
-            };
+    // ── Gestion des touches (avant tout widget) ──────────────────────────────
+    // terminal_active inclut server_managed : même si egui a déplacé le focus
+    // suite à un Tab, on continue de traiter les touches dans ce mode.
+    let terminal_active = (state.input_focused || state.server_managed) && !modal_open;
 
-            if let Some(content) = content_opt {
-                let filename = file
-                    .path
-                    .as_ref()
-                    .and_then(|p| p.file_name())
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| {
-                        if file.name.is_empty() { "fichier".into() } else { file.name.clone() }
-                    });
-                state.dropped_file = Some(PendingUpload {
-                    remote_path: format!("/tmp/{}", filename),
-                    filename,
-                    content,
-                });
+    if terminal_active {
+        // ── Interception du Tab ───────────────────────────────────────────────
+        // On retire les événements Tab de la queue d'événements EN PREMIER,
+        // avant que tout widget egui ne les voie. Cela empêche la traversée
+        // de focus GUI (boutons, champs...) pendant la complétion.
+        // On capture si Tab était présent pour le traiter nous-mêmes.
+        let tab_pressed = ui.input_mut(|i| {
+            let found = i.events.iter().any(|e| {
+                matches!(e, egui::Event::Key { key: Key::Tab, pressed: true, .. })
+            });
+            i.events.retain(|e| match e {
+                egui::Event::Key { key: Key::Tab, pressed: true, .. } => false,
+                egui::Event::Text(t) if t == "\t" => false,
+                _ => true,
+            });
+            found
+        });
+
+        if state.server_managed {
+            // ── Mode piloté par le serveur ────────────────────────────────────
+            // Chaque touche est envoyée directement au serveur.
+            let mut raw: Vec<u8> = Vec::new();
+
+            // Drain les Text events ; alimente server_mode_echo pour l'écho local.
+            ui.input_mut(|i| i.events.retain(|e| {
+                if let egui::Event::Text(t) = e {
+                    raw.extend_from_slice(t.as_bytes());
+                    state.server_mode_echo.push_str(t);
+                    false
+                } else {
+                    true
+                }
+            }));
+
+            // ── Touches de navigation readline ────────────────────────────────
+            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)) {
+                raw.push(b'\n');
+                // Extraire la commande depuis current_line AVANT que le serveur
+                // n'envoie \r\n (qui effacera current_line). C'est le seul moment
+                // où la ligne complète (prompt + commande complétée) est visible.
+                if let Some(cmd) = extract_cmd_from_line(&state.current_line) {
+                    push_session_history(&mut state.session_history, &cmd);
+                    state.pending_history_save = true;
+                }
+                state.server_managed = false;
+                state.server_mode_echo.clear();
+                state.input.clear();
+            }
+            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Backspace)) {
+                raw.push(0x7F);
+                state.server_mode_echo.pop();
+            }
+            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Delete)) {
+                raw.extend_from_slice(b"\x1b[3~");
+                state.server_mode_echo.clear();
+            }
+            // Tab via tab_pressed (déjà retiré de la queue ci-dessus).
+            if tab_pressed {
+                raw.push(b'\t');
+                // Le shell va réécrire la ligne complète → écho local invalide.
+                state.server_mode_echo.clear();
+            }
+            // Flèches : position curseur inconnue localement après déplacement.
+            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowUp)) {
+                raw.extend_from_slice(b"\x1b[A");
+                state.server_mode_echo.clear();
+            }
+            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowDown)) {
+                raw.extend_from_slice(b"\x1b[B");
+                state.server_mode_echo.clear();
+            }
+            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowLeft)) {
+                raw.extend_from_slice(b"\x1b[D");
+                state.server_mode_echo.clear();
+            }
+            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowRight)) {
+                raw.extend_from_slice(b"\x1b[C");
+                state.server_mode_echo.clear();
+            }
+            if ui.input_mut(|i| {
+                i.consume_key(Modifiers::NONE, Key::Home)
+                    || i.consume_key(Modifiers::CTRL, Key::A)
+            }) {
+                raw.push(0x01);
+                state.server_mode_echo.clear();
+            }
+            if ui.input_mut(|i| {
+                i.consume_key(Modifiers::NONE, Key::End)
+                    || i.consume_key(Modifiers::CTRL, Key::E)
+            }) {
+                raw.push(0x05);
+                state.server_mode_echo.clear();
+            }
+            if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::W)) {
+                raw.push(0x17);
+                delete_last_word(&mut state.server_mode_echo);
+            }
+            if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::U)) {
+                raw.push(0x15);
+                state.server_mode_echo.clear();
+            }
+            if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::K)) {
+                raw.push(0x0b);
+                state.server_mode_echo.clear();
+            }
+            if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::L)) {
+                raw.push(0x0c);
+                state.server_mode_echo.clear();
+            }
+            if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::D)) {
+                raw.push(0x04);
+            }
+            if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::C)) {
+                raw.push(0x03);
+                state.server_managed = false;
+                state.server_mode_echo.clear();
+                state.input.clear();
+            }
+            if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::Z)) {
+                raw.push(0x1a);
+            }
+
+            if !raw.is_empty() {
+                to_send = Some(raw);
+            }
+        } else {
+            // ── Mode local (buffer côté client) ──────────────────────────────
+
+            if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::C)) {
+                state.input.clear();
+                state.show_history_dropdown = false;
+                state.history_dropdown_idx = None;
+                to_send = Some(vec![0x03]);
+            }
+
+            if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::U)) {
+                state.input.clear();
+                state.show_history_dropdown = false;
+                state.history_dropdown_idx = None;
+            }
+
+            if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::W)) {
+                delete_last_word(&mut state.input);
+                state.show_history_dropdown = false;
+                state.history_dropdown_idx = None;
+            }
+
+            if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::L)) {
+                to_send = Some(vec![0x0c]);
+            }
+
+            // Flèche Haut : remplace l'input par la commande précédente (plus ancienne).
+            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowUp)) {
+                let hist_len = state.session_history.len();
+                if hist_len > 0 {
+                    let next = match state.history_nav_idx {
+                        None => {
+                            state.history_nav_saved = state.input.clone();
+                            0
+                        }
+                        Some(n) => (n + 1).min(hist_len - 1),
+                    };
+                    state.history_nav_idx = Some(next);
+                    state.input = state.session_history[next].clone();
+                    state.cursor_to_end = true;
+                }
+                state.show_history_dropdown = false;
+            }
+
+            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowDown)) {
+                match state.history_nav_idx {
+                    None => {}
+                    Some(0) => {
+                        state.history_nav_idx = None;
+                        state.input = std::mem::take(&mut state.history_nav_saved);
+                        state.cursor_to_end = true;
+                    }
+                    Some(n) => {
+                        let prev = n - 1;
+                        state.history_nav_idx = Some(prev);
+                        state.input = state.session_history[prev].clone();
+                        state.cursor_to_end = true;
+                    }
+                }
+                state.show_history_dropdown = false;
+            }
+
+            // Échap : ferme le dropdown de recherche, ou efface la saisie et quitte la navigation.
+            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+                if state.show_history_dropdown {
+                    state.show_history_dropdown = false;
+                    state.history_dropdown_idx = None;
+                } else {
+                    state.input.clear();
+                    state.history_nav_idx = None;
+                    state.history_nav_saved.clear();
+                }
+            }
+
+            // Entrée avec dropdown de recherche ouvert : sélectionne sans envoyer.
+            if state.show_history_dropdown
+                && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter))
+            {
+                let hist = build_filtered_history(&state.session_history, &state.input);
+                if let Some(idx) = state.history_dropdown_idx {
+                    if let Some(cmd) = hist.get(idx) {
+                        state.input = cmd.clone();
+                    }
+                }
+                state.show_history_dropdown = false;
+                state.history_dropdown_idx = None;
+                state.history_nav_idx = None;
+                state.history_nav_saved.clear();
+            }
+
+            // Tab via tab_pressed (déjà retiré de la queue ci-dessus).
+            if tab_pressed {
+                if state.show_history_dropdown {
+                    let hist = build_filtered_history(&state.session_history, &state.input);
+                    if let Some(idx) = state.history_dropdown_idx {
+                        if let Some(cmd) = hist.get(idx) {
+                            state.input = cmd.clone();
+                        }
+                    }
+                    state.show_history_dropdown = false;
+                    state.history_dropdown_idx = None;
+                } else {
+                    // Envoie le buffer local + \t au shell.
+                    // readline reçoit les octets via le PTY et traite \t comme
+                    // complétion en tenant compte du contexte (guillemets, pipes…).
+                    let mut bytes = state.input.as_bytes().to_vec();
+                    bytes.push(b'\t');
+                    to_send = Some(bytes);
+                    state.input.clear();
+                    state.server_managed = true;
+                }
             }
         }
     }
 
-    // ── Lecture du presse-papiers au clic droit (pour le menu contextuel) ─────
-    // N'est exécutée qu'une fois par clic droit, pas à chaque frame.
-    if ui.input(|i| i.pointer.secondary_pressed()) {
-        if let Ok(mut cb) = arboard::Clipboard::new() {
-            state.clipboard_mirror = cb.get_text().unwrap_or_default();
-        }
-    }
-
-    let font_id = FontId::monospace(state.font_size);
-
-    let frame_resp = egui::Frame::none()
+    egui::Frame::none()
         .fill(bg)
         .inner_margin(egui::Margin::same(6.0))
         .show(ui, |ui| {
@@ -360,80 +768,250 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui) -> Option<Vec<u8>> {
                     ui.set_min_size(available);
 
                     for line in &state.lines {
-                        if line.spans.is_empty() {
-                            // Ligne vide : espace pour maintenir la hauteur.
-                            ui.label(egui::RichText::new(" ").font(font_id.clone()));
-                        } else {
-                            ui.add(
-                                egui::Label::new(line_to_job(line, &font_id))
-                                    .selectable(true),
+                        ui.horizontal_wrapped(|ui| {
+                            ui.style_mut().spacing.item_spacing.x = 0.0;
+                            for span in &line.spans {
+                                let mut rt = egui::RichText::new(&span.text)
+                                    .font(font_id.clone())
+                                    .color(span.fg);
+                                if span.bold { rt = rt.strong(); }
+                                ui.label(rt);
+                            }
+                            // Ligne vide → espace pour maintenir la hauteur de ligne.
+                            if line.spans.is_empty() {
+                                ui.label(egui::RichText::new(" ").font(font_id.clone()));
+                            }
+                        });
+                    }
+
+                    // Affiche la ligne en cours (SSH) + local echo (saisie utilisateur).
+                    ui.horizontal_wrapped(|ui| {
+                        ui.style_mut().spacing.item_spacing.x = 0.0;
+                        for span in &state.current_line {
+                            let mut rt = egui::RichText::new(&span.text)
+                                .font(font_id.clone())
+                                .color(span.fg);
+                            if span.bold { rt = rt.strong(); }
+                            ui.label(rt);
+                        }
+                        // Local echo : en mode piloté par le serveur on affiche les
+                        // caractères tapés depuis la dernière réponse serveur (écho
+                        // immédiat, effacé dès que le serveur confirme via feed()).
+                        if state.server_managed {
+                            ui.label(
+                                egui::RichText::new(format!("{}█", state.server_mode_echo))
+                                    .font(font_id.clone())
+                                    .color(Color32::WHITE),
                             );
+                        } else {
+                            let chars: Vec<char> = state.input.chars().collect();
+                            let pos = state.cursor_char_pos.min(chars.len());
+                            let before: String = chars[..pos].iter().collect();
+                            let after: String = chars[pos..].iter().collect();
+                            if !before.is_empty() {
+                                ui.label(
+                                    egui::RichText::new(before)
+                                        .font(font_id.clone())
+                                        .color(Color32::WHITE),
+                                );
+                            }
+                            ui.label(
+                                egui::RichText::new("█")
+                                    .font(font_id.clone())
+                                    .color(Color32::WHITE),
+                            );
+                            if !after.is_empty() {
+                                ui.label(
+                                    egui::RichText::new(after)
+                                        .font(font_id.clone())
+                                        .color(Color32::from_rgb(180, 180, 180)),
+                                );
+                            }
+                        }
+                    });
+                });
+
+            // ── Liste déroulante de l'historique ─────────────────────────────
+            if state.show_history_dropdown {
+                let hist = build_filtered_history(&state.session_history, &state.input);
+
+                // Referme si le filtre n'a plus de résultats.
+                if hist.is_empty() {
+                    state.show_history_dropdown = false;
+                    state.history_dropdown_idx = None;
+                } else {
+                    // Corrige l'index si le filtre a réduit la liste.
+                    if let Some(idx) = state.history_dropdown_idx {
+                        if idx >= hist.len() {
+                            state.history_dropdown_idx = Some(0);
                         }
                     }
 
-                    // Ligne en cours de saisie côté serveur (non terminée par \n).
-                    if !state.current_line.is_empty() {
-                        let partial = TermLine { spans: state.current_line.clone() };
-                        ui.add(
-                            egui::Label::new(line_to_job(&partial, &font_id))
-                                .selectable(true),
-                        );
+                    let clip = ui.clip_rect();
+                    let item_h = state.font_size + 10.0;
+                    let visible_count = hist.len().min(8) as f32;
+                    let dropdown_h = visible_count * item_h + 10.0;
+                    let dropdown_w = (clip.width() - 24.0).clamp(200.0, 640.0);
+
+                    // Positionne la liste juste au-dessus de la ligne d'écho.
+                    let pos = egui::pos2(
+                        clip.left() + 12.0,
+                        clip.bottom() - dropdown_h - item_h * 1.8,
+                    );
+
+                    let selected_idx = state.history_dropdown_idx;
+                    let mut new_input: Option<String> = None;
+                    let mut close_dropdown = false;
+
+                    egui::Area::new(egui::Id::new("hist_dropdown"))
+                        .order(egui::Order::Foreground)
+                        .fixed_pos(pos)
+                        .show(ui.ctx(), |ui| {
+                            ui.set_max_width(dropdown_w);
+                            egui::Frame::none()
+                                .fill(Color32::from_rgb(28, 28, 45))
+                                .stroke(egui::Stroke::new(
+                                    1.0,
+                                    Color32::from_rgb(90, 90, 170),
+                                ))
+                                .inner_margin(egui::Margin::same(4.0))
+                                .show(ui, |ui| {
+                                    // En-tête discret.
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            " Historique ({}/{})",
+                                            selected_idx.map(|i| i + 1).unwrap_or(0),
+                                            hist.len()
+                                        ))
+                                        .small()
+                                        .color(Color32::from_rgb(120, 120, 180)),
+                                    );
+                                    ui.separator();
+
+                                    egui::ScrollArea::vertical()
+                                        .max_height(dropdown_h - 32.0)
+                                        .show(ui, |ui| {
+                                            // Affiche du plus ancien (haut) au plus récent (bas).
+                                            let len = hist.len();
+                                            for rev_i in 0..len {
+                                                let i = len - 1 - rev_i;
+                                                let entry = &hist[i];
+                                                let selected = selected_idx == Some(i);
+
+                                                let resp = ui.selectable_label(
+                                                    selected,
+                                                    egui::RichText::new(entry.as_str())
+                                                        .font(FontId::monospace(
+                                                            state.font_size - 1.0,
+                                                        ))
+                                                        .color(if selected {
+                                                            Color32::WHITE
+                                                        } else {
+                                                            Color32::from_rgb(200, 200, 220)
+                                                        }),
+                                                );
+
+                                                // Fait défiler pour garder la sélection visible.
+                                                if selected {
+                                                    resp.scroll_to_me(Some(egui::Align::Center));
+                                                }
+
+                                                // Clic souris → sélectionne.
+                                                if resp.clicked() {
+                                                    new_input = Some(entry.clone());
+                                                    close_dropdown = true;
+                                                }
+                                            }
+                                        });
+                                });
+                        });
+
+                    if let Some(cmd) = new_input {
+                        state.input = cmd;
                     }
-                });
+                    if close_dropdown {
+                        state.show_history_dropdown = false;
+                        state.history_dropdown_idx = None;
+                    }
+                }
+            }
 
-            // ── Ligne de saisie ───────────────────────────────────────────────
-            ui.separator();
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("> ")
-                        .color(Color32::from_rgb(100, 220, 100))
-                        .font(font_id.clone()),
-                );
-                let response = ui.add(
-                    egui::TextEdit::singleline(&mut state.input)
-                        .id(input_id)
-                        .font(egui::TextStyle::Monospace)
-                        .desired_width(f32::INFINITY)
-                        .frame(false)
-                        .text_color(Color32::WHITE),
-                );
+            // ── Champ de saisie invisible (capture clavier uniquement) ────────
+            let input_before = state.input.clone();
+            let response = ui.add_sized(
+                [0.0, 0.0],
+                egui::TextEdit::singleline(&mut state.input)
+                    .font(egui::TextStyle::Monospace)
+                    .frame(false)
+                    .text_color(Color32::TRANSPARENT),
+            );
 
-                // PIÈGE – vol de focus : ne PAS appeler request_focus()
-                // inconditionnellement.
-                //
-                // Ordre de rendu dans ui/mod.rs :
-                //   render_sidebar()      ← dialogue de profil (egui::Window) rendu ici
-                //   render_main_area()    ← terminal rendu ici  (APRÈS la sidebar)
-                //
-                // Si request_focus() est appelé sans condition, le terminal écrase
-                // chaque frame le focus que le dialogue vient d'obtenir, rendant
-                // les champs du formulaire (nom, hôte, port…) insaisissables.
-                //
-                // Règle publique (Memory::focus() est privé en egui 0.29) :
-                //   wants_keyboard_input() == true  ET  terminal_focused == false
-                //     → un AUTRE widget a le focus → ne pas voler
-                //   wants_keyboard_input() == false
-                //     → personne n'a le focus → demander le focus (auto-focus)
-                //
-                // NOTE FUTURE : cette garde est générique ; l'ajout de nouveaux
-                // dialogues (Telnet, scan…) ne nécessite aucune modification ici.
-                let other_widget_focused =
-                    ui.ctx().wants_keyboard_input() && !terminal_focused;
-                if !other_widget_focused && !response.has_focus() {
+            // Repositionne le curseur interne du TextEdit en fin de texte
+            // après toute modification programmatique (sélection depuis l'historique).
+            if state.cursor_to_end {
+                state.cursor_to_end = false;
+                let char_count = state.input.chars().count();
+                let mut te_state = egui::TextEdit::load_state(ui.ctx(), response.id)
+                    .unwrap_or_default();
+                te_state.cursor.set_char_range(Some(egui::text::CCursorRange::one(
+                    egui::text::CCursor::new(char_count),
+                )));
+                egui::TextEdit::store_state(ui.ctx(), response.id, te_state);
+                state.cursor_char_pos = char_count;
+            }
+
+            // Lit la position réelle du curseur TextEdit pour synchroniser l'affichage.
+            if let Some(te_state) = egui::TextEdit::load_state(ui.ctx(), response.id) {
+                if let Some(range) = te_state.cursor.char_range() {
+                    state.cursor_char_pos = range.primary.index;
+                }
+            }
+            // Gestion du focus :
+            // - En mode server_managed : on force toujours le focus sur le terminal.
+            //   egui peut avoir déplacé le focus suite au Tab (traversée de focus GUI) ;
+            //   on le récupère immédiatement pour que les touches suivantes soient capturées.
+            // - En mode local : on ne vole le focus que si aucun autre widget ne l'a
+            //   (pour ne pas interrompre les champs de formulaire, l'explorateur, etc.).
+            if !modal_open {
+                if state.server_managed {
                     response.request_focus();
+                } else {
+                    let another_widget_has_focus = ui.ctx().memory(|m| {
+                        m.focused().is_some_and(|id| id != response.id)
+                    });
+                    if !another_widget_has_focus && !response.has_focus() {
+                        response.request_focus();
+                    }
                 }
+            }
+            // En mode server_managed, input_focused est forcé à true même si egui
+            // a momentanément déplacé le focus, pour que terminal_active reste vrai.
+            state.input_focused = response.has_focus() || state.server_managed;
 
-                // Entrée → envoie la commande si aucun raccourci n'a déjà produit des octets.
-                if to_send.is_none()
-                    && response.has_focus()
-                    && ui.input(|i| i.key_pressed(Key::Enter))
-                {
-                    let mut cmd = state.input.clone();
-                    cmd.push('\n');
-                    to_send = Some(cmd.into_bytes());
-                    state.input.clear();
+            // Si l'utilisateur a tapé un caractère pendant la navigation historique,
+            // on quitte la navigation (son texte modifié devient la saisie courante).
+            if state.history_nav_idx.is_some() && state.input != input_before {
+                state.history_nav_idx = None;
+                state.history_nav_saved.clear();
+            }
+
+            // Entrée validée → envoie la ligne au serveur (avec \n) et vide le champ.
+            // (Cas dropdown déjà traité avant le Frame par consume_key.)
+            if response.has_focus()
+                && ui.input(|i| i.key_pressed(Key::Enter))
+                && !state.show_history_dropdown
+            {
+                let cmd = state.input.clone();
+                if push_session_history(&mut state.session_history, &cmd) {
+                    state.pending_history_save = true;
                 }
-            });
+                let mut send_cmd = cmd;
+                send_cmd.push('\n');
+                to_send = Some(send_cmd.into_bytes());
+                state.input.clear();
+                state.history_nav_idx = None;
+                state.history_nav_saved.clear();
+            }
         });
 
     // ── Ctrl+C : copie ou SIGINT ──────────────────────────────────────────────
