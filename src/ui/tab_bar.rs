@@ -24,7 +24,7 @@ pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
                     app.active_tab = i;
                 }
                 // Bouton de fermeture discret.
-                if ui.small_button("✕")
+                if ui.small_button("X")
                     .on_hover_text("Fermer la session (Ctrl+W)")
                     .clicked()
                 {
@@ -36,7 +36,7 @@ pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
         }
 
         // Bouton d'ajout d'onglet → ouvre le dialogue de nouveau profil.
-        if ui.button("＋").on_hover_text("Nouvelle connexion (Ctrl+T)").clicked() {
+        if ui.button("+").on_hover_text("Nouvelle connexion (Ctrl+T)").clicked() {
             app.sidebar.show_new_profile = true;
         }
     });

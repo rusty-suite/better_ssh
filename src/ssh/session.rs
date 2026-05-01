@@ -240,11 +240,11 @@ async fn run_session(
                     let _ = event_tx.send(match upload_result {
                         Ok(n) => SessionEvent::SftpOpResult {
                             ok: true,
-                            message: format!("✓ Transfert réussi — {} → {} octets", remote_path, n),
+                            message: format!("OK Transfert réussi — {} → {} octets", remote_path, n),
                         },
                         Err(e) => SessionEvent::SftpOpResult {
                             ok: false,
-                            message: format!("✗ Erreur SFTP : {}", e),
+                            message: format!("ERREUR SFTP : {}", e),
                         },
                     });
                 }

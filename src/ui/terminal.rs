@@ -5,36 +5,29 @@ use egui::{Color32, FontId, Key, Modifiers, ScrollArea, Ui};
 
 // ─── Constantes ───────────────────────────────────────────────────────────────
 
-/// Nombre maximal de lignes conservées dans le scrollback.
 const MAX_LINES: usize = 10_000;
 
-/// Préréglages de taille de police avec leur label et leur taille en points.
 pub const FONT_PRESETS: &[(&str, f32)] = &[
-    ("Minuscule",   9.0),
-    ("Petite",     11.0),
-    ("Normale",    13.0),
-    ("Confortable",15.0),
-    ("Grande",     18.0),
-    ("Énorme",     22.0),
+    ("Minuscule",    9.0),
+    ("Petite",      11.0),
+    ("Normale",     13.0),
+    ("Confortable", 15.0),
+    ("Grande",      18.0),
+    ("Énorme",      22.0),
 ];
 
 // ─── Structures de rendu ──────────────────────────────────────────────────────
 
-/// Une ligne de terminal composée de plusieurs segments colorés (spans).
 #[derive(Debug, Clone)]
 pub struct TermLine {
     pub spans: Vec<TermSpan>,
 }
 
-/// Un segment de texte avec ses attributs visuels SGR (couleur, gras).
 #[derive(Debug, Clone)]
 pub struct TermSpan {
     pub text: String,
-    /// Couleur de premier plan (ANSI foreground).
     pub fg: Color32,
-    /// Couleur de fond optionnelle (ANSI background).
     pub bg: Option<Color32>,
-    /// true si l'attribut gras (SGR 1) est actif.
     pub bold: bool,
 }
 
@@ -42,7 +35,7 @@ impl Default for TermSpan {
     fn default() -> Self {
         Self {
             text: String::new(),
-            fg: Color32::from_rgb(204, 204, 204), // gris clair par défaut
+            fg: Color32::from_rgb(204, 204, 204),
             bg: None,
             bold: false,
         }
@@ -51,45 +44,35 @@ impl Default for TermSpan {
 
 // ─── Transfert de fichier par glisser-déposer ─────────────────────────────────
 
-/// Fichier déposé sur le terminal en attente de confirmation.
 #[derive(Clone)]
 pub struct PendingUpload {
     pub filename: String,
     pub content: Vec<u8>,
-    /// Chemin distant éditable dans la popup de confirmation.
     pub remote_path: String,
 }
 
 // ─── État du terminal ─────────────────────────────────────────────────────────
 
 pub struct TerminalState {
-    /// Lignes complètes (terminées par \n) dans le scrollback.
     pub lines: Vec<TermLine>,
-    /// Texte saisi par l'utilisateur (non encore envoyé).
     pub input: String,
-    /// Taille actuelle de la police en points.
     pub font_size: f32,
-    /// true = le scroll suit automatiquement le bas (défilé par nouvelle sortie).
     pub scroll_to_bottom: bool,
-    /// true = affiche la popup de recherche dans l'historique (Ctrl+R).
     pub show_history_search: bool,
-    /// Requête de recherche tapée dans la popup.
     pub history_search_query: String,
-    /// Fichier glissé-déposé en attente de confirmation de transfert.
+    /// Dernier texte copié depuis la sortie du terminal (sélection souris + Ctrl+C).
+    pub selected_text: String,
+    /// Contenu du presse-papiers système (mis à jour au clic droit pour le menu "Coller").
+    pub clipboard_mirror: String,
+    /// Fichier glissé-déposé en attente de confirmation.
     pub dropped_file: Option<PendingUpload>,
-    /// Upload confirmé par l'utilisateur, prêt à être envoyé par l'appelant.
+    /// Upload confirmé, prêt à être envoyé par l'appelant.
     pub upload_confirmed: Option<PendingUpload>,
 
-    // ── État interne du parseur ANSI ────────────────────────────────────────
-    /// Octets reçus mais pas encore parsés (séquences incomplètes).
     ansi_buf: Vec<u8>,
-    /// Couleur de texte active (SGR foreground).
     current_fg: Color32,
-    /// Couleur de fond active (SGR background), None si par défaut.
     current_bg: Option<Color32>,
-    /// Attribut gras actif (SGR 1).
     current_bold: bool,
-    /// Ligne en cours de construction (pas encore terminée par \n).
     current_line: Vec<TermSpan>,
 }
 
@@ -102,6 +85,8 @@ impl TerminalState {
             scroll_to_bottom: true,
             show_history_search: false,
             history_search_query: String::new(),
+            selected_text: String::new(),
+            clipboard_mirror: String::new(),
             dropped_file: None,
             upload_confirmed: None,
             ansi_buf: Vec::new(),
@@ -112,17 +97,12 @@ impl TerminalState {
         }
     }
 
-    /// Injecte des octets bruts reçus du canal SSH dans le parseur ANSI.
     pub fn feed(&mut self, data: &[u8]) {
         self.ansi_buf.extend_from_slice(data);
         self.process_buffer();
     }
 
-    // ─── Parseur ANSI interne ─────────────────────────────────────────────────
-
-    /// Ajoute un caractère à la ligne courante en fusionnant les spans de même couleur.
     fn push_char(&mut self, ch: char) {
-        // Réutilise le dernier span si les attributs sont identiques (optimisation mémoire).
         if let Some(span) = self.current_line.last_mut() {
             if span.fg == self.current_fg
                 && span.bg == self.current_bg
@@ -132,7 +112,6 @@ impl TerminalState {
                 return;
             }
         }
-        // Sinon, crée un nouveau span avec les attributs courants.
         self.current_line.push(TermSpan {
             text: ch.to_string(),
             fg: self.current_fg,
@@ -141,47 +120,40 @@ impl TerminalState {
         });
     }
 
-    /// Valide la ligne courante et commence une nouvelle.
     fn newline(&mut self) {
         let spans = std::mem::take(&mut self.current_line);
         self.lines.push(TermLine { spans });
-        // Purge les vieilles lignes pour éviter une consommation mémoire illimitée.
         if self.lines.len() > MAX_LINES {
             self.lines.remove(0);
         }
         self.scroll_to_bottom = true;
     }
 
-    /// Boucle de parsing : traite tous les octets disponibles dans `ansi_buf`.
     fn process_buffer(&mut self) {
         let mut i = 0;
         while i < self.ansi_buf.len() {
             let b = self.ansi_buf[i];
             match b {
-                b'\r' => { i += 1; } // retour chariot seul → ignoré
+                b'\r' => { i += 1; }
                 b'\n' => { self.newline(); i += 1; }
                 b'\x08' => {
-                    // Backspace : supprime le dernier caractère du span courant.
                     if let Some(span) = self.current_line.last_mut() {
                         span.text.pop();
                     }
                     i += 1;
                 }
                 0x1b => {
-                    // Séquence d'échappement ESC — attend au moins un octet de plus.
                     if i + 1 >= self.ansi_buf.len() { break; }
                     match self.ansi_buf[i + 1] {
                         b'[' => {
-                            // CSI (Control Sequence Introducer) : ESC [ params cmd
                             let start = i + 2;
                             let mut end = start;
-                            // Les paramètres CSI sont des chiffres et des ';'.
                             while end < self.ansi_buf.len()
                                 && !self.ansi_buf[end].is_ascii_alphabetic()
                             {
                                 end += 1;
                             }
-                            if end >= self.ansi_buf.len() { break; } // séquence incomplète
+                            if end >= self.ansi_buf.len() { break; }
                             let cmd = self.ansi_buf[end] as char;
                             let params_str = std::str::from_utf8(&self.ansi_buf[start..end])
                                 .unwrap_or("")
@@ -191,20 +163,17 @@ impl TerminalState {
                             }
                             i = end + 1;
                         }
-                        _ => { i += 2; } // ESC + octet inconnu → ignore les deux
+                        _ => { i += 2; }
                     }
                 }
                 b'\t' => {
-                    // Tabulation → 4 espaces (approximation simple)
                     for _ in 0..4 { self.push_char(' '); }
                     i += 1;
                 }
                 0x20..=0x7E => {
-                    // Caractère ASCII imprimable (code point unique = octet unique).
                     self.push_char(b as char);
                     i += 1;
                 }
-                // ── Séquences UTF-8 multi-octets ─────────────────────────────
                 0xC0..=0xDF => {
                     if i + 2 > self.ansi_buf.len() { break; }
                     let s = std::str::from_utf8(&self.ansi_buf[i..i + 2])
@@ -226,14 +195,12 @@ impl TerminalState {
                     for ch in s.chars() { self.push_char(ch); }
                     i += 4;
                 }
-                _ => { i += 1; } // octet de continuation ou contrôle non géré → ignore
+                _ => { i += 1; }
             }
         }
-        // Conserve les octets non traités pour la prochaine frame.
         self.ansi_buf.drain(..i);
     }
 
-    /// Applique les codes SGR (couleurs, attributs) à l'état courant du terminal.
     fn apply_sgr(&mut self, params: &str) {
         let codes: Vec<u8> = params
             .split(';')
@@ -279,7 +246,6 @@ impl TerminalState {
         }
     }
 
-    /// Remet les attributs visuels à leurs valeurs par défaut.
     fn reset_attrs(&mut self) {
         self.current_fg = Color32::from_rgb(204, 204, 204);
         self.current_bg = None;
@@ -289,14 +255,10 @@ impl TerminalState {
 
 // ─── Rendu egui ──────────────────────────────────────────────────────────────
 
-/// Retourne les octets à envoyer au serveur si l'utilisateur a validé une saisie
-/// ou appuyé sur un raccourci de contrôle. `None` sinon.
 pub fn render(state: &mut TerminalState, ui: &mut Ui) -> Option<Vec<u8>> {
     let bg = Color32::from_rgb(20, 20, 30);
     let mut to_send: Option<Vec<u8>> = None;
 
-    // ID stable utilisé pour détecter si le champ de saisie du terminal a le focus
-    // (persisté d'une frame à l'autre dans la mémoire egui).
     let input_id = egui::Id::new("terminal_input_field");
     let terminal_focused = ui.ctx().memory(|m| m.has_focus(input_id));
 
@@ -306,55 +268,34 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui) -> Option<Vec<u8>> {
         state.font_size = (state.font_size + scroll_delta * 0.05).clamp(8.0, 32.0);
     }
 
-    // ── Touches de contrôle terminal (uniquement quand le terminal a le focus) ─
-    // Traitées AVANT le TextEdit pour que celui-ci ne les consomme pas.
+    // ── Touches de contrôle (hors Ctrl+C, traité après les labels) ────────────
+    // Ctrl+C est intentionnellement absent ici : il doit être évalué APRÈS
+    // que les labels sélectionnables aient eu la chance de copier du texte.
     if terminal_focused {
-        // Ctrl+R → bascule la recherche historique
         if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::R)) {
             state.show_history_search = !state.show_history_search;
-        }
-        // Ctrl+C → SIGINT (tue le processus en cours)
-        else if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::C)) {
-            state.input.clear();
-            to_send = Some(vec![0x03]);
-        }
-        // Ctrl+D → EOF (ferme le shell / fin de fichier)
-        else if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::D)) {
+        } else if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::D)) {
             to_send = Some(vec![0x04]);
-        }
-        // Ctrl+Z → SIGTSTP (suspend le processus)
-        else if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::Z)) {
+        } else if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::Z)) {
             to_send = Some(vec![0x1a]);
-        }
-        // Ctrl+L → efface l'écran (équivalent de `clear`)
-        else if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::L)) {
+        } else if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::L)) {
             to_send = Some(vec![0x0c]);
-        }
-        // Ctrl+U → efface la ligne courante
-        else if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::U)) {
+        } else if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::U)) {
             state.input.clear();
             to_send = Some(vec![0x15]);
-        }
-        // Flèche haut → historique précédent (ESC [ A)
-        else if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowUp)) {
+        } else if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowUp)) {
             to_send = Some(b"\x1b[A".to_vec());
-        }
-        // Flèche bas → historique suivant (ESC [ B)
-        else if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowDown)) {
+        } else if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowDown)) {
             to_send = Some(b"\x1b[B".to_vec());
-        }
-        // Tab → complétion automatique côté serveur
-        else if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Tab)) {
+        } else if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Tab)) {
             to_send = Some(vec![0x09]);
         }
     }
 
-    // ── Glisser-déposer : détecte les fichiers déposés sur la fenêtre ──────────
-    // Accepte les dépôts pendant que cet onglet est actif.
+    // ── Glisser-déposer ───────────────────────────────────────────────────────
     if state.dropped_file.is_none() {
         let dropped = ui.ctx().input(|i| i.raw.dropped_files.clone());
         if let Some(file) = dropped.into_iter().next() {
-            // Lit le contenu : soit fourni directement (navigateur), soit lu depuis le chemin.
             let content_opt: Option<Vec<u8>> = if let Some(bytes) = &file.bytes {
                 Some(bytes.to_vec())
             } else if let Some(path) = &file.path {
@@ -381,7 +322,17 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui) -> Option<Vec<u8>> {
         }
     }
 
-    egui::Frame::none()
+    // ── Lecture du presse-papiers au clic droit (pour le menu contextuel) ─────
+    // N'est exécutée qu'une fois par clic droit, pas à chaque frame.
+    if ui.input(|i| i.pointer.secondary_pressed()) {
+        if let Ok(mut cb) = arboard::Clipboard::new() {
+            state.clipboard_mirror = cb.get_text().unwrap_or_default();
+        }
+    }
+
+    let font_id = FontId::monospace(state.font_size);
+
+    let frame_resp = egui::Frame::none()
         .fill(bg)
         .inner_margin(egui::Margin::same(6.0))
         .show(ui, |ui| {
@@ -390,17 +341,18 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui) -> Option<Vec<u8>> {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("(reverse-i-search):").color(Color32::YELLOW));
                     ui.text_edit_singleline(&mut state.history_search_query);
-                    if ui.small_button("✕").clicked() {
+                    if ui.small_button("X").clicked() {
                         state.show_history_search = false;
                         state.history_search_query.clear();
                     }
                 });
             }
 
-            let font_id = FontId::monospace(state.font_size);
             let available = ui.available_size();
 
-            // ── Zone de défilement principale ────────────────────────────────
+            // ── Zone de défilement : sortie du terminal ───────────────────────
+            // Chaque ligne est un Label unique (LayoutJob multi-couleur) afin que
+            // la sélection souris couvre toute la ligne, pas seulement un span.
             ScrollArea::vertical()
                 .auto_shrink([false; 2])
                 .stick_to_bottom(state.scroll_to_bottom)
@@ -408,30 +360,24 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui) -> Option<Vec<u8>> {
                     ui.set_min_size(available);
 
                     for line in &state.lines {
-                        ui.horizontal_wrapped(|ui| {
-                            for span in &line.spans {
-                                let mut rt = egui::RichText::new(&span.text)
-                                    .font(font_id.clone())
-                                    .color(span.fg);
-                                if span.bold { rt = rt.strong(); }
-                                ui.label(rt);
-                            }
-                            if line.spans.is_empty() {
-                                ui.label(egui::RichText::new(" ").font(font_id.clone()));
-                            }
-                        });
+                        if line.spans.is_empty() {
+                            // Ligne vide : espace pour maintenir la hauteur.
+                            ui.label(egui::RichText::new(" ").font(font_id.clone()));
+                        } else {
+                            ui.add(
+                                egui::Label::new(line_to_job(line, &font_id))
+                                    .selectable(true),
+                            );
+                        }
                     }
 
+                    // Ligne en cours de saisie côté serveur (non terminée par \n).
                     if !state.current_line.is_empty() {
-                        ui.horizontal_wrapped(|ui| {
-                            for span in &state.current_line {
-                                ui.label(
-                                    egui::RichText::new(&span.text)
-                                        .font(font_id.clone())
-                                        .color(span.fg),
-                                );
-                            }
-                        });
+                        let partial = TermLine { spans: state.current_line.clone() };
+                        ui.add(
+                            egui::Label::new(line_to_job(&partial, &font_id))
+                                .selectable(true),
+                        );
                     }
                 });
 
@@ -439,7 +385,7 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui) -> Option<Vec<u8>> {
             ui.separator();
             ui.horizontal(|ui| {
                 ui.label(
-                    egui::RichText::new("❯ ")
+                    egui::RichText::new("> ")
                         .color(Color32::from_rgb(100, 220, 100))
                         .font(font_id.clone()),
                 );
@@ -451,11 +397,33 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui) -> Option<Vec<u8>> {
                         .frame(false)
                         .text_color(Color32::WHITE),
                 );
-                if !response.has_focus() {
+
+                // PIÈGE – vol de focus : ne PAS appeler request_focus()
+                // inconditionnellement.
+                //
+                // Ordre de rendu dans ui/mod.rs :
+                //   render_sidebar()      ← dialogue de profil (egui::Window) rendu ici
+                //   render_main_area()    ← terminal rendu ici  (APRÈS la sidebar)
+                //
+                // Si request_focus() est appelé sans condition, le terminal écrase
+                // chaque frame le focus que le dialogue vient d'obtenir, rendant
+                // les champs du formulaire (nom, hôte, port…) insaisissables.
+                //
+                // Règle publique (Memory::focus() est privé en egui 0.29) :
+                //   wants_keyboard_input() == true  ET  terminal_focused == false
+                //     → un AUTRE widget a le focus → ne pas voler
+                //   wants_keyboard_input() == false
+                //     → personne n'a le focus → demander le focus (auto-focus)
+                //
+                // NOTE FUTURE : cette garde est générique ; l'ajout de nouveaux
+                // dialogues (Telnet, scan…) ne nécessite aucune modification ici.
+                let other_widget_focused =
+                    ui.ctx().wants_keyboard_input() && !terminal_focused;
+                if !other_widget_focused && !response.has_focus() {
                     response.request_focus();
                 }
 
-                // Entrée → envoie la commande si aucun raccourci de contrôle n'a déjà été capturé.
+                // Entrée → envoie la commande si aucun raccourci n'a déjà produit des octets.
                 if to_send.is_none()
                     && response.has_focus()
                     && ui.input(|i| i.key_pressed(Key::Enter))
@@ -467,6 +435,72 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui) -> Option<Vec<u8>> {
                 }
             });
         });
+
+    // ── Ctrl+C : copie ou SIGINT ──────────────────────────────────────────────
+    // Vérifié APRÈS le rendu des labels pour laisser egui traiter la copie en premier.
+    // Si egui a copié du texte cette frame (via la sélection label), on mémorise le
+    // texte et on n'envoie PAS SIGINT. Sinon, on envoie SIGINT normalement.
+    let just_copied = ui.ctx().output(|o| o.copied_text.clone());
+    if !just_copied.is_empty() {
+        state.selected_text = just_copied.clone();
+    }
+    if to_send.is_none() && terminal_focused {
+        if ui.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::C)) {
+            if just_copied.is_empty() {
+                // Rien n'a été sélectionné/copié → interrompre le processus.
+                state.input.clear();
+                to_send = Some(vec![0x03]);
+            }
+            // Sinon : la copie a déjà été gérée par le label, rien à faire.
+        }
+    }
+
+    // ── Menu contextuel clic droit ────────────────────────────────────────────
+    // Variables d'action : remplies dans la closure, appliquées après.
+    let mut do_copy  = false;
+    let mut do_paste = false;
+    let selected_snapshot  = state.selected_text.clone();
+    let clipboard_snapshot = state.clipboard_mirror.clone();
+
+    frame_resp.response.context_menu(|ui| {
+        // "Copier" : visible si du texte a déjà été sélectionné.
+        if !selected_snapshot.is_empty() {
+            if ui.button("📋 Copier la sélection").clicked() {
+                do_copy = true;
+                ui.close_menu();
+            }
+        } else {
+            ui.add_enabled(false, egui::Button::new("📋 Copier la sélection"))
+                .on_disabled_hover_text("Sélectionnez du texte avec la souris d'abord");
+        }
+
+        ui.separator();
+
+        // "Coller" : visible si le presse-papiers contient du texte.
+        if !clipboard_snapshot.is_empty() {
+            let preview: String = clipboard_snapshot.chars().take(40).collect();
+            let label = if clipboard_snapshot.len() > 40 {
+                format!("📋 Coller  « {}… »", preview)
+            } else {
+                format!("📋 Coller  « {} »", preview)
+            };
+            if ui.button(label).clicked() {
+                do_paste = true;
+                ui.close_menu();
+            }
+        } else {
+            ui.add_enabled(false, egui::Button::new("📋 Coller"))
+                .on_disabled_hover_text("Presse-papiers vide");
+        }
+    });
+
+    // Application des actions hors closure (pour éviter les conflits de borrow sur state).
+    if do_copy {
+        ui.ctx().output_mut(|o| o.copied_text = state.selected_text.clone());
+    }
+    if do_paste {
+        state.input.push_str(&state.clipboard_mirror);
+    }
 
     // ── Popup de confirmation de transfert de fichier ─────────────────────────
     if let Some(pending) = &mut state.dropped_file {
@@ -501,7 +535,7 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui) -> Option<Vec<u8>> {
 
                 ui.horizontal(|ui| {
                     if ui.button("✅ Transférer").clicked() { confirmed = true; }
-                    if ui.button("✕ Annuler").clicked()     { cancelled = true; }
+                    if ui.button("Annuler").clicked()         { cancelled = true; }
                 });
             });
 
@@ -515,7 +549,26 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui) -> Option<Vec<u8>> {
     to_send
 }
 
-/// Formate une taille en octets en chaîne lisible (Ko / Mo).
+// ─── Utilitaires ──────────────────────────────────────────────────────────────
+
+/// Convertit une TermLine (multi-spans colorés) en LayoutJob egui.
+/// Un seul widget Label par ligne → sélection souris couvre toute la ligne.
+fn line_to_job(line: &TermLine, font_id: &FontId) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    for span in &line.spans {
+        let mut fmt = egui::TextFormat {
+            font_id: font_id.clone(),
+            color: span.fg,
+            ..Default::default()
+        };
+        if span.bold {
+            fmt.color = span.fg; // conserver la couleur même en gras
+        }
+        job.append(&span.text, 0.0, fmt);
+    }
+    job
+}
+
 fn format_size(bytes: usize) -> String {
     if bytes < 1024 {
         format!("{} o", bytes)

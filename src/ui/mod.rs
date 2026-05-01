@@ -431,7 +431,8 @@ fn render_telnet_dialog(app: &mut BetterSshApp, ctx: &Context) {
     let mut do_connect = false;
     let mut do_cancel  = false;
 
-    egui::Window::new("⌨ Connexion Telnet")
+    // Titre sans emoji hors-Noto (voir commentaire dans sidebar.rs).
+    egui::Window::new(">_ Connexion Telnet")
         .default_size([320.0, 160.0])
         .collapsible(false)
         .resizable(false)
@@ -464,11 +465,11 @@ fn render_telnet_dialog(app: &mut BetterSshApp, ctx: &Context) {
                 let can_connect = !dlg.host.is_empty() && port_ok;
 
                 ui.add_enabled_ui(can_connect, |ui| {
-                    if ui.button("⌨ Connecter").clicked() {
+                    if ui.button(">_ Connecter").clicked() {
                         do_connect = true;
                     }
                 });
-                if ui.button("✕ Annuler").clicked() {
+                if ui.button("Annuler").clicked() {
                     do_cancel = true;
                 }
             });
@@ -582,7 +583,7 @@ fn render_scan_connect_dialog(app: &mut BetterSshApp, ctx: &Context) {
                                 if dlg.vault_password_loaded {
                                     // Mot de passe chargé depuis le vault → indicateur vert.
                                     ui.label(
-                                        egui::RichText::new("✓ Chargé depuis le vault")
+                                        egui::RichText::new("[OK] Chargé depuis le vault")
                                             .small()
                                             .color(egui::Color32::from_rgb(80, 200, 80)),
                                     );
@@ -676,7 +677,7 @@ fn render_scan_connect_dialog(app: &mut BetterSshApp, ctx: &Context) {
                         do_connect = true;
                     }
                 });
-                if ui.button("✕ Annuler").clicked() {
+                if ui.button("Annuler").clicked() {
                     do_cancel = true;
                 }
             });
