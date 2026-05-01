@@ -67,9 +67,6 @@ short_description = "Modern SSH Client"
 long_description = "A modern, secure SSH client built with Rust and egui — multi-tab sessions, network scanner, SFTP explorer and encrypted password vault"
 copyright = "© 2025 rusty-suite — MIT License"
 
-[dev-dependencies]
-tempfile = "3"
-
 [profile.release]
 opt-level = 3
 lto = true
