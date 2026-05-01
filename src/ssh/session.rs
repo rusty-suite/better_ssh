@@ -9,6 +9,7 @@ use crossbeam_channel::{Receiver, Sender};
 use russh::client::{self, Handle};
 use russh::keys::key::PublicKey;
 use russh::{ChannelMsg, Disconnect};
+use russh_sftp::client::SftpSession;
 use std::sync::Arc;
 use tokio::time::{timeout, Duration};
 
@@ -25,6 +26,8 @@ pub enum SessionCommand {
     Resize { cols: u32, rows: u32 },
     /// Ferme proprement la session SSH.
     Disconnect,
+    /// Upload d'un fichier via SFTP sur le serveur (contenu en mémoire).
+    SftpUpload { content: Vec<u8>, remote_path: String },
 }
 
 /// Événements émis par la task SSH vers l'UI.
@@ -40,6 +43,8 @@ pub enum SessionEvent {
     Error(String),
     /// Le fingerprint de l'hôte a changé → alerte MITM potentielle.
     FingerprintAlert { host: String, fingerprint: String },
+    /// Résultat d'une opération SFTP (upload, etc.).
+    SftpOpResult { ok: bool, message: String },
 }
 
 // ─── Handler russh ────────────────────────────────────────────────────────────
@@ -113,6 +118,11 @@ impl SshSession {
     /// Tente de lire un événement sans bloquer (non-blocking).
     pub fn try_recv(&self) -> Option<SessionEvent> {
         self.event_rx.try_recv().ok()
+    }
+
+    /// Lance un upload SFTP en arrière-plan (le résultat arrive via SessionEvent::SftpOpResult).
+    pub fn upload_file(&self, content: Vec<u8>, remote_path: String) {
+        let _ = self.cmd_tx.send(SessionCommand::SftpUpload { content, remote_path });
     }
 }
 
@@ -216,6 +226,27 @@ async fn run_session(
                         "Déconnecté par l'utilisateur".into(),
                     ));
                     return Ok(());
+                }
+                SessionCommand::SftpUpload { content, remote_path } => {
+                    // Ouvre un canal SFTP séparé sur la même session SSH (multiplexage).
+                    let upload_result: Result<usize> = async {
+                        let mut sftp_ch = session.channel_open_session().await?;
+                        sftp_ch.request_subsystem(true, "sftp").await?;
+                        let mut sftp = SftpSession::new(sftp_ch.into_stream()).await?;
+                        sftp.write(&remote_path, &content).await?;
+                        Ok(content.len())
+                    }
+                    .await;
+                    let _ = event_tx.send(match upload_result {
+                        Ok(n) => SessionEvent::SftpOpResult {
+                            ok: true,
+                            message: format!("✓ Transfert réussi — {} → {} octets", remote_path, n),
+                        },
+                        Err(e) => SessionEvent::SftpOpResult {
+                            ok: false,
+                            message: format!("✗ Erreur SFTP : {}", e),
+                        },
+                    });
                 }
             }
         }

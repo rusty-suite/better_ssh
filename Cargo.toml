@@ -50,6 +50,9 @@ version = "0.1.0"
 short_description = "Modern SSH Client"
 long_description = "A modern, secure SSH client built with Rust"
 
+[dev-dependencies]
+tempfile = "3"
+
 [profile.release]
 opt-level = 3
 lto = true
