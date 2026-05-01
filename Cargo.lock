@@ -702,6 +702,7 @@ version = "1.0.0"
 dependencies = [
  "age",
  "anyhow",
+ "arboard",
  "argon2",
  "async-trait",
  "base64 0.22.1",
