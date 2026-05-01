@@ -82,7 +82,7 @@ pub fn render(state: &mut SnippetsState, ui: &mut Ui) {
                 .small().weak(),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button("＋ Nouveau").clicked() {
+            if ui.button("+ Nouveau").clicked() {
                 state.editing = Some(Snippet::new("", ""));
                 state.show_editor = true;
             }
@@ -257,7 +257,7 @@ fn render_editor(state: &mut SnippetsState, ctx: &egui::Context) {
             ui.separator();
             ui.horizontal(|ui| {
                 if ui.button("💾 Sauvegarder").clicked() { save = true; }
-                if ui.button("✕ Annuler").clicked()      { cancel = true; }
+                if ui.button("Annuler").clicked()          { cancel = true; }
             });
         });
 

@@ -195,7 +195,7 @@ pub fn render(state: &mut NetworkScanState, ui: &mut Ui) -> ScanAction {
 fn render_params_panel(state: &mut NetworkScanState, ui: &mut Ui) {
     // En-tête cliquable pour plier/déplier les paramètres.
     ui.horizontal(|ui| {
-        let arrow = if state.show_params { "▼" } else { "▶" };
+        let arrow = if state.show_params { "v" } else { ">" };
         if ui.button(format!("{arrow} Paramètres")).clicked() {
             state.show_params = !state.show_params;
         }
@@ -208,7 +208,7 @@ fn render_params_panel(state: &mut NetworkScanState, ui: &mut Ui) {
                 }
                 ui.add_enabled(false, egui::Button::new("⏳ Scan en cours…"));
             } else {
-                if ui.button("▶ Scanner").clicked() {
+                if ui.button("Scanner").clicked() {
                     state.start_scan();
                 }
                 if ui.button("🔄 Réinitialiser").on_hover_text(
