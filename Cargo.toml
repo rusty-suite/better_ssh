@@ -52,9 +52,6 @@ image = { version = "0.25", features = ["png"] }
 sys-locale = "0.3"
 ureq = { version = "2", features = ["tls"] }
 
-[dev-dependencies]
-tempfile = "3"
-
 [target.'cfg(windows)'.build-dependencies]
 winres = "0.1"
 

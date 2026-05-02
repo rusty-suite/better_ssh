@@ -44,7 +44,7 @@ pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
         }
 
         // Bouton d'ajout d'onglet → ouvre le dialogue de nouveau profil.
-        if ui.button("＋").on_hover_text(&app.lang.tab_new_hint).clicked() {
+        if ui.button("+").on_hover_text(&app.lang.tab_new_hint).clicked() {
             app.sidebar.show_new_profile = true;
         }
     });

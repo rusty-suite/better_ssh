@@ -4,6 +4,7 @@
 use crate::config::{AppConfig, AuthMethod, ConnectionProfile, Vault};
 use crate::i18n::{Lang, LangFile};
 use crate::network::scanner::ScanResult;
+use crate::network::TelnetSession;
 use crate::ssh::session::{SessionCommand, SessionEvent, SftpCommand, SshSession};
 use crate::ui::{
     file_explorer::FileExplorerState,
@@ -14,6 +15,52 @@ use crate::ui::{
     terminal::TerminalState,
 };
 use egui::{Context, FontId, TextStyle};
+
+// ─── Session unifiée (SSH ou Telnet) ─────────────────────────────────────────
+
+/// Enveloppe une session SSH ou Telnet derrière une interface commune.
+pub enum AnySession {
+    Ssh(SshSession),
+    Telnet(TelnetSession),
+}
+
+impl AnySession {
+    pub fn send_input(&self, data: Vec<u8>) {
+        match self {
+            Self::Ssh(s)    => s.send_input(data),
+            Self::Telnet(t) => t.send_input(data),
+        }
+    }
+    pub fn try_recv(&self) -> Option<SessionEvent> {
+        match self {
+            Self::Ssh(s)    => s.try_recv(),
+            Self::Telnet(t) => t.try_recv(),
+        }
+    }
+    pub fn disconnect(&self) {
+        match self {
+            Self::Ssh(s)    => s.disconnect(),
+            Self::Telnet(t) => t.disconnect(),
+        }
+    }
+    /// Commandes SFTP : SSH uniquement, ignorées pour Telnet.
+    pub fn send_sftp(&self, cmd: SftpCommand) {
+        if let Self::Ssh(s) = self { s.send_sftp(cmd); }
+    }
+    /// Upload de fichier via glisser-déposer : SSH uniquement.
+    pub fn upload_file(&self, content: Vec<u8>, remote_path: String) {
+        if let Self::Ssh(s) = self {
+            let _ = s.cmd_tx.send(SessionCommand::SftpUpload { content, remote_path });
+        }
+    }
+}
+
+// ─── Dialogue Telnet ──────────────────────────────────────────────────────────
+
+pub struct TelnetDialog {
+    pub host: String,
+    pub port: String,
+}
 
 #[derive(Clone, Debug)]
 pub enum LangRepoStatus {
@@ -124,6 +171,8 @@ pub struct BetterSshApp {
     pub vault: Option<Vault>,
     /// Dialogue de connexion en attente depuis le scan réseau (None = pas de dialogue).
     pub pending_scan_connect: Option<ScanConnectDialog>,
+    /// Dialogue de connexion Telnet (None = fermé).
+    pub telnet_dialog: Option<TelnetDialog>,
     /// Langue active de l'interface.
     pub lang: Lang,
     /// Répertoire de travail (config, vault, lang…).
@@ -178,6 +227,7 @@ impl BetterSshApp {
             tokio_rt: rt,
             vault: None,
             pending_scan_connect: None,
+            telnet_dialog: None,
             lang,
             work_dir,
             lang_chosen,
