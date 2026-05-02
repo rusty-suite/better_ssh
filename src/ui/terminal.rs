@@ -123,6 +123,10 @@ impl TerminalState {
             scroll_to_bottom: true,
             show_history_search: false,
             history_search_query: String::new(),
+            selected_text: String::new(),
+            clipboard_mirror: String::new(),
+            dropped_file: None,
+            upload_confirmed: None,
             session_history: VecDeque::new(),
             show_history_dropdown: false,
             history_dropdown_idx: None,
@@ -740,7 +744,11 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
         }
     }
 
-    egui::Frame::none()
+    // font_id DOIT être déclaré ici et passé à tous les widgets du terminal.
+    // Ne jamais le supprimer : il contrôle la police monospace + taille de toute la zone.
+    let font_id = FontId::monospace(state.font_size);
+
+    let frame_resp = egui::Frame::none()
         .fill(bg)
         .inner_margin(egui::Margin::same(6.0))
         .show(ui, |ui| {

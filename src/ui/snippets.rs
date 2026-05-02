@@ -175,7 +175,7 @@ pub fn render(state: &mut SnippetsState, ui: &mut Ui) {
                         }
 
                         // Bouton d'exécution.
-                        if ui.button("▶ Envoyer au terminal").clicked() {
+                        if ui.button("> Envoyer au terminal").clicked() {
                             // TODO: envoyer `s.command` vers la session SSH active
                             log::debug!("Snippet sélectionné : {}", s.command);
                         }

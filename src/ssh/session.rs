@@ -303,12 +303,14 @@ async fn run_session(
                     .await;
                     let _ = event_tx.send(match upload_result {
                         Ok(n) => SessionEvent::SftpOpResult {
+                            op: format!("upload {}", remote_path),
                             ok: true,
-                            message: format!("OK Transfert réussi — {} → {} octets", remote_path, n),
+                            msg: format!("Transfert réussi — {} octets", n),
                         },
                         Err(e) => SessionEvent::SftpOpResult {
+                            op: format!("upload {}", remote_path),
                             ok: false,
-                            message: format!("ERREUR SFTP : {}", e),
+                            msg: format!("Erreur upload SFTP : {}", e),
                         },
                     });
                 }

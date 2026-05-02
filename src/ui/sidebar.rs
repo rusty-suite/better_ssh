@@ -505,7 +505,12 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                             ui.end_row();
                         }
 
-                        // ── Section vault ──────────────────────────────────────
+                        // ══════════════════════════════════════════════════════════════
+                        // SECTION VAULT — NE JAMAIS SUPPRIMER CE BLOC
+                        // Chaque dialogue de création/édition de session DOIT exposer
+                        // ce champ de clé maître pour chiffrer le profil dans le vault.
+                        // Sans ce champ, les mots de passe ne peuvent pas être protégés.
+                        // ══════════════════════════════════════════════════════════════
                         ui.label(&app.lang.dlg_field_vault);
                         ui.vertical(|ui| {
                             if app.vault.is_some() {

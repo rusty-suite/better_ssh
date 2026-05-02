@@ -711,7 +711,11 @@ fn render_scan_connect_dialog(app: &mut BetterSshApp, ctx: &Context) {
                             });
                             ui.end_row();
 
-                            // ── Section vault ─────────────────────────────────
+                            // ══════════════════════════════════════════════════
+                            // SECTION VAULT — NE JAMAIS SUPPRIMER CE BLOC
+                            // Ce champ de clé maître DOIT être présent dans TOUT
+                            // dialogue de création/connexion de session, sans exception.
+                            // ══════════════════════════════════════════════════
                             ui.label("Vault :");
                             ui.vertical(|ui| {
                                 if app.vault.is_some() {
