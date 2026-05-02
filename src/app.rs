@@ -2,10 +2,9 @@
 /// `BetterSshApp` contient tout l'état global : onglets ouverts, sidebar,
 /// panneau de scan réseau, préférences, etc.
 use crate::config::{AppConfig, AuthMethod, ConnectionProfile, Vault};
-use crate::i18n::{Lang, LangFile};
 use crate::network::scanner::ScanResult;
-use crate::network::TelnetSession;
-use crate::ssh::session::{SessionCommand, SessionEvent, SftpCommand, SshSession};
+use crate::network::telnet::TelnetSession;
+use crate::ssh::session::{SessionEvent, SshSession};
 use crate::ui::{
     file_explorer::FileExplorerState,
     network_scan::NetworkScanState,
@@ -19,6 +18,7 @@ use egui::{Context, FontId, TextStyle};
 // ─── Session unifiée (SSH ou Telnet) ─────────────────────────────────────────
 
 /// Enveloppe une session SSH ou Telnet derrière une interface commune.
+/// Permet à Tab d'héberger les deux types sans modifier la logique d'affichage.
 pub enum AnySession {
     Ssh(SshSession),
     Telnet(TelnetSession),
@@ -27,8 +27,8 @@ pub enum AnySession {
 impl AnySession {
     pub fn send_input(&self, data: Vec<u8>) {
         match self {
-            Self::Ssh(s)    => s.send_input(data),
-            Self::Telnet(t) => t.send_input(data),
+            Self::Ssh(s)     => s.send_input(data),
+            Self::Telnet(t)  => t.send_input(data),
         }
     }
     pub fn try_recv(&self) -> Option<SessionEvent> {
@@ -43,33 +43,20 @@ impl AnySession {
             Self::Telnet(t) => t.disconnect(),
         }
     }
-    /// Commandes SFTP : SSH uniquement, ignorées pour Telnet.
-    pub fn send_sftp(&self, cmd: SftpCommand) {
-        if let Self::Ssh(s) = self { s.send_sftp(cmd); }
-    }
-    /// Upload de fichier via glisser-déposer : SSH uniquement.
+    /// Upload SFTP (SSH uniquement ; ignoré pour Telnet).
     pub fn upload_file(&self, content: Vec<u8>, remote_path: String) {
         if let Self::Ssh(s) = self {
-            let _ = s.cmd_tx.send(SessionCommand::SftpUpload { content, remote_path });
+            s.upload_file(content, remote_path);
         }
     }
 }
 
 // ─── Dialogue Telnet ──────────────────────────────────────────────────────────
 
+/// État du dialogue de connexion Telnet.
 pub struct TelnetDialog {
     pub host: String,
     pub port: String,
-}
-
-#[derive(Clone, Debug)]
-pub enum LangRepoStatus {
-    Idle,
-    Loading,
-    Offline,
-    Error(String),
-    Downloading(String),
-    Installed(String),
 }
 
 // ─── Dialogue de connexion depuis le scan réseau ──────────────────────────────
@@ -95,8 +82,6 @@ pub struct ScanConnectDialog {
     pub is_new: bool,
     /// ID du profil existant (pour mise à jour et accès au vault).
     pub existing_profile_id: Option<String>,
-    /// Message d'erreur de déverrouillage vault (mauvais mot de passe).
-    pub vault_error: Option<String>,
 }
 
 // ─── Onglet de session ────────────────────────────────────────────────────────
@@ -173,26 +158,6 @@ pub struct BetterSshApp {
     pub pending_scan_connect: Option<ScanConnectDialog>,
     /// Dialogue de connexion Telnet (None = fermé).
     pub telnet_dialog: Option<TelnetDialog>,
-    /// Langue active de l'interface.
-    pub lang: Lang,
-    /// Répertoire de travail (config, vault, lang…).
-    pub work_dir: std::path::PathBuf,
-    /// Stem de la langue active (ex : `"CH_fr"`).
-    pub lang_chosen: String,
-    /// Liste des langues disponibles (embarquées + sur disque).
-    pub lang_files: Vec<LangFile>,
-    /// Liste des fichiers de langue présents localement sur disque.
-    pub local_lang_files: Vec<LangFile>,
-    /// Liste des langues trouvées sur GitHub.
-    pub remote_lang_files: Vec<LangFile>,
-    /// true = fenêtre de sélection de langue visible.
-    pub show_lang_window: bool,
-    /// Canal de réception d'un téléchargement de langue en arrière-plan.
-    pub lang_download_rx: Option<crossbeam_channel::Receiver<anyhow::Result<(String, String)>>>,
-    /// Canal de réception de l'inventaire GitHub.
-    pub lang_remote_rx: Option<crossbeam_channel::Receiver<anyhow::Result<Vec<LangFile>>>>,
-    /// État réseau / dépôt de la fenêtre de langue.
-    pub lang_repo_status: LangRepoStatus,
 }
 
 impl BetterSshApp {
@@ -206,11 +171,6 @@ impl BetterSshApp {
         apply_theme(&cc.egui_ctx, dark_mode);
 
         let rt = tokio::runtime::Handle::current();
-
-        let work_dir = crate::i18n::detect_work_dir();
-        let (lang, lang_chosen) = crate::i18n::load_lang(&work_dir);
-        let lang_files = crate::i18n::list_lang_files(&work_dir);
-        let local_lang_files = crate::i18n::list_local_lang_files(&work_dir);
 
         Self {
             sidebar: SidebarState::new(config.profiles.clone()),
@@ -228,16 +188,6 @@ impl BetterSshApp {
             vault: None,
             pending_scan_connect: None,
             telnet_dialog: None,
-            lang,
-            work_dir,
-            lang_chosen,
-            lang_files,
-            local_lang_files,
-            remote_lang_files: Vec::new(),
-            show_lang_window: false,
-            lang_download_rx: None,
-            lang_remote_rx: None,
-            lang_repo_status: LangRepoStatus::Idle,
         }
     }
 
@@ -247,27 +197,6 @@ impl BetterSshApp {
         let id = self.next_tab_id;
         self.next_tab_id += 1;
         let mut tab = Tab::new(id, profile.clone());
-
-        // Répertoire de départ de l'explorateur = home de l'utilisateur.
-        tab.file_explorer.current_path = if profile.username == "root" {
-            "/root".into()
-        } else if !profile.username.is_empty() {
-            format!("/home/{}", profile.username)
-        } else {
-            "/".into()
-        };
-
-        // Charge l'historique de commandes depuis le vault chiffré si disponible.
-        if let Some(vault) = &self.vault {
-            if let Ok(history) = vault.get_history(&profile.id) {
-                // session_history : index 0 = plus récente.
-                // On insère du plus ancien vers le plus récent via push_front.
-                for cmd in history.into_iter().rev() {
-                    tab.terminal.session_history.push_front(cmd);
-                    if tab.terminal.session_history.len() >= 50 { break; }
-                }
-            }
-        }
 
         // Lance la session SSH en arrière-plan immédiatement.
         tab.session = Some(AnySession::Ssh(SshSession::connect(profile, password)));
@@ -309,23 +238,6 @@ impl BetterSshApp {
         }
     }
 
-    /// Déchiffre et injecte hôte + utilisateur depuis le vault dans tous les profils
-    /// en mémoire. À appeler dès que le vault vient d'être déverrouillé.
-    pub fn hydrate_profiles_from_vault(&mut self) {
-        if let Some(vault) = &self.vault {
-            for profile in &mut self.sidebar.profiles {
-                if profile.host.is_empty() {
-                    profile.host = vault.get_address(&profile.id)
-                        .ok().flatten().unwrap_or_default();
-                }
-                if profile.username.is_empty() {
-                    profile.username = vault.get_username(&profile.id)
-                        .ok().flatten().unwrap_or_default();
-                }
-            }
-        }
-    }
-
     /// Applique la taille de police dans tous les onglets ouverts et dans egui.
     pub fn apply_font_size(&mut self, ctx: &Context, size: f32) {
         self.config.terminal.font_size = size;
@@ -344,8 +256,6 @@ impl eframe::App for BetterSshApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         // Collecte d'abord les événements SSH reçus en async depuis la dernière frame.
         poll_session_events(self);
-        poll_lang_download(self);
-        poll_remote_langs(self);
         handle_keyboard_shortcuts(self, ctx);
         crate::ui::render(self, ctx);
         // Repaint régulier pour rafraîchir les données SSH qui arrivent en async.
@@ -382,23 +292,8 @@ fn handle_keyboard_shortcuts(app: &mut BetterSshApp, ctx: &Context) {
         }
         // F2 → toggle explorateur SFTP
         if i.consume_key(Modifiers::NONE, Key::F2) {
-            let idx = app.active_tab;
-            if idx < app.tabs.len() {
-                let was_shown = app.tabs[idx].show_file_explorer;
-                app.tabs[idx].show_file_explorer = !was_shown;
-                // Déclenche le premier chargement si on ouvre l'explorateur
-                // sur une session déjà connectée sans listage précédent.
-                if app.tabs[idx].show_file_explorer
-                    && app.tabs[idx].connected
-                    && !app.tabs[idx].file_explorer.loaded
-                    && !app.tabs[idx].file_explorer.loading
-                {
-                    let path = app.tabs[idx].file_explorer.current_path.clone();
-                    app.tabs[idx].file_explorer.loading = true;
-                    if let Some(session) = &app.tabs[idx].session {
-                        session.send_sftp(SftpCommand::ListDir(path));
-                    }
-                }
+            if let Some(tab) = app.tabs.get_mut(app.active_tab) {
+                tab.show_file_explorer = !tab.show_file_explorer;
             }
         }
         // F3 → toggle moniteur système
@@ -427,24 +322,6 @@ fn handle_keyboard_shortcuts(app: &mut BetterSshApp, ctx: &Context) {
 /// Vide les canaux d'événements de toutes les sessions SSH actives
 /// et met à jour le terminal / l'état de connexion de chaque onglet.
 fn poll_session_events(app: &mut BetterSshApp) {
-    // Sauvegarde asynchrone de l'historique quand une commande a été ajoutée.
-    // L'encryption age est lente (~1 s) → spawn_blocking pour ne pas bloquer l'UI.
-    for tab in &mut app.tabs {
-        if tab.terminal.pending_history_save {
-            tab.terminal.pending_history_save = false;
-            if let Some(vault) = app.vault.clone() {
-                let commands: Vec<String> = tab.terminal.session_history
-                    .iter().take(20).cloned().collect();
-                let profile_id = tab.profile.id.clone();
-                tokio::task::spawn_blocking(move || {
-                    if let Err(e) = vault.store_history(&profile_id, &commands) {
-                        log::warn!("Historique vault : échec sauvegarde : {e}");
-                    }
-                });
-            }
-        }
-    }
-
     for tab in &mut app.tabs {
         // Collecte les événements sans garder de référence sur `tab.session`
         // (évite le conflit borrow immuable / mutable sur `tab`).
@@ -470,16 +347,6 @@ fn poll_session_events(app: &mut BetterSshApp) {
                 SessionEvent::Connected => {
                     tab.connected = true;
                     tab.terminal.feed(b"\x1b[32mConnexion SSH etablie.\x1b[0m\r\n");
-                    // Déclenche le premier listage SFTP si l'explorateur est ouvert.
-                    // La commande est mise en attente dans le canal mpsc et traitée dès
-                    // que run_sftp_handler démarre (après l'init du sous-système SFTP).
-                    if tab.show_file_explorer {
-                        let path = tab.file_explorer.current_path.clone();
-                        tab.file_explorer.loading = true;
-                        if let Some(session) = &tab.session {
-                            session.send_sftp(SftpCommand::ListDir(path));
-                        }
-                    }
                 }
                 SessionEvent::Data(data) => {
                     tab.terminal.feed(&data);
@@ -499,191 +366,13 @@ fn poll_session_events(app: &mut BetterSshApp) {
                 SessionEvent::FingerprintAlert { host, fingerprint } => {
                     log::warn!("Alerte fingerprint MITM : {host} — {fingerprint}");
                 }
-                SessionEvent::SftpListing { path, entries } => {
-                    // N'applique le listage que s'il correspond au chemin courant
-                    // (évite d'écraser une navigation effectuée entre-temps).
-                    if tab.file_explorer.current_path == path {
-                        tab.file_explorer.entries = entries;
-                        tab.file_explorer.loading = false;
-                        tab.file_explorer.loaded  = true;
-                        tab.file_explorer.dir_error = None;
-                    }
-                }
-                SessionEvent::SftpUid(uid) => {
-                    tab.file_explorer.current_uid = Some(uid);
-                }
-                SessionEvent::SftpOpResult { op, ok, msg } => {
-                    // Détecte les erreurs de listage de répertoire.
-                    let is_list_op = op.starts_with("list ");
-                    let listed_path = if is_list_op {
-                        Some(op.trim_start_matches("list ").to_string())
-                    } else {
-                        None
-                    };
-
-                    if ok {
-                        tab.file_explorer.add_toast(format!("✓ {op}"));
-                        // Rafraîchit le répertoire courant après toute opération réussie.
-                        let path = tab.file_explorer.current_path.clone();
-                        tab.file_explorer.loading = true;
-                        if let Some(session) = &tab.session {
-                            session.send_sftp(SftpCommand::ListDir(path));
-                        }
-                    } else if listed_path.as_deref() == Some(tab.file_explorer.current_path.as_str()) {
-                        // Erreur de listage du répertoire courant → accès refusé ou indisponible.
-                        let label = if msg.to_lowercase().contains("permission")
-                            || msg.to_lowercase().contains("denied")
-                            || msg.contains("3")  // code SFTP 3 = permission denied
-                        {
-                            "Accès refusé — droits insuffisants pour lire ce répertoire.".into()
-                        } else {
-                            format!("Impossible de lire le répertoire : {msg}")
-                        };
-                        tab.file_explorer.loading   = false;
-                        tab.file_explorer.dir_error = Some(label);
-                    } else {
-                        tab.file_explorer.add_toast(format!("✗ {op} : {msg}"));
-                    }
+                SessionEvent::SftpOpResult { ok, message } => {
+                    let color = if ok { "32" } else { "31" };
+                    let text = format!("\r\n\x1b[{}m{}\x1b[0m\r\n", color, message);
+                    tab.terminal.feed(text.as_bytes());
                 }
             }
         }
-    }
-}
-
-// ─── Téléchargement de langue en arrière-plan ────────────────────────────────
-
-fn poll_lang_download(app: &mut BetterSshApp) {
-    if let Some(rx) = &app.lang_download_rx {
-        if let Ok(result) = rx.try_recv() {
-            match result {
-                Ok((stem, text)) => {
-                    let lang_dir = app.work_dir.join("lang");
-                    let _ = std::fs::create_dir_all(&lang_dir);
-                    let _ = std::fs::write(lang_dir.join(format!("{stem}.toml")), &text);
-                    app.lang_files = crate::i18n::list_lang_files(&app.work_dir);
-                    app.local_lang_files = crate::i18n::list_local_lang_files(&app.work_dir);
-                    app.reload_lang(&stem);
-                    app.lang_repo_status = LangRepoStatus::Installed(stem);
-                }
-                Err(err) => {
-                    app.lang_repo_status = classify_repo_error(&err.to_string());
-                }
-            }
-            app.lang_download_rx = None;
-        }
-    }
-}
-
-fn poll_remote_langs(app: &mut BetterSshApp) {
-    if let Some(rx) = &app.lang_remote_rx {
-        if let Ok(result) = rx.try_recv() {
-            match result {
-                Ok(files) => {
-                    app.remote_lang_files = files;
-                    app.lang_repo_status = LangRepoStatus::Idle;
-                }
-                Err(err) => {
-                    app.remote_lang_files.clear();
-                    app.lang_repo_status = classify_repo_error(&err.to_string());
-                }
-            }
-            app.lang_remote_rx = None;
-        }
-    }
-}
-
-impl BetterSshApp {
-    /// Recharge la langue depuis le disque/embarqué et l'applique.
-    pub fn reload_lang(&mut self, stem: &str) {
-        crate::i18n::save_lang_choice(&self.work_dir, stem);
-        let (lang, chosen) = crate::i18n::load_lang(&self.work_dir);
-        self.lang = lang;
-        self.lang_chosen = chosen;
-        self.lang_files = crate::i18n::list_lang_files(&self.work_dir);
-        self.local_lang_files = crate::i18n::list_local_lang_files(&self.work_dir);
-    }
-
-    pub fn refresh_remote_langs(&mut self) {
-        if self.lang_remote_rx.is_some() {
-            return;
-        }
-        let (tx, rx) = crossbeam_channel::bounded(1);
-        self.lang_repo_status = LangRepoStatus::Loading;
-        self.lang_remote_rx = Some(rx);
-        std::thread::spawn(move || {
-            let _ = tx.send(crate::i18n::list_remote_lang_files());
-        });
-    }
-
-    pub fn download_lang_from_git(&mut self, stem: String) {
-        if self.lang_download_rx.is_some() {
-            return;
-        }
-        let work_dir = self.work_dir.clone();
-        let (tx, rx) = crossbeam_channel::bounded(1);
-        self.lang_repo_status = LangRepoStatus::Downloading(stem.clone());
-        self.lang_download_rx = Some(rx);
-        std::thread::spawn(move || {
-            let result = crate::i18n::download_lang(&work_dir, &stem).map(|text| (stem, text));
-            let _ = tx.send(result);
-        });
-    }
-
-    pub fn install_embedded_lang(&mut self, stem: String) {
-        if self.lang_download_rx.is_some() {
-            return;
-        }
-        let work_dir = self.work_dir.clone();
-        let (tx, rx) = crossbeam_channel::bounded(1);
-        self.lang_repo_status = LangRepoStatus::Downloading(stem.clone());
-        self.lang_download_rx = Some(rx);
-        std::thread::spawn(move || {
-            let result = crate::i18n::install_embedded_lang(&work_dir, &stem).map(|text| (stem, text));
-            let _ = tx.send(result);
-        });
-    }
-
-    pub fn select_lang(&mut self, stem: String) {
-        let is_local = self.local_lang_files.iter().any(|file| file.stem == stem);
-        if is_local {
-            self.reload_lang(&stem);
-            return;
-        }
-
-        let is_remote = self.remote_lang_files.iter().any(|file| file.stem == stem);
-        if is_remote {
-            self.download_lang_from_git(stem);
-            return;
-        }
-
-        if crate::i18n::embedded_lang(&stem).is_some() {
-            self.install_embedded_lang(stem);
-        }
-    }
-
-    pub fn ensure_remote_langs_loaded(&mut self) {
-        if self.remote_lang_files.is_empty()
-            && self.lang_remote_rx.is_none()
-            && matches!(self.lang_repo_status, LangRepoStatus::Idle)
-        {
-            self.refresh_remote_langs();
-        }
-    }
-}
-
-fn classify_repo_error(message: &str) -> LangRepoStatus {
-    let lower = message.to_lowercase();
-    if lower.contains("dns")
-        || lower.contains("resolve")
-        || lower.contains("timed out")
-        || lower.contains("connection")
-        || lower.contains("network")
-        || lower.contains("os error 10060")
-        || lower.contains("os error 10061")
-    {
-        LangRepoStatus::Offline
-    } else {
-        LangRepoStatus::Error(message.to_string())
     }
 }
 
@@ -692,36 +381,8 @@ fn classify_repo_error(message: &str) -> LangRepoStatus {
 /// Initialise les polices egui et définit les styles de texte de l'application.
 /// `terminal_size` est la taille en points utilisée pour la police monospace.
 pub fn setup_fonts(ctx: &Context, terminal_size: f32) {
-    let mut fonts = egui::FontDefinitions::default();
-
-    // Police d'icônes Phosphor (zone Unicode privée — jamais en collision avec le texte).
-    crate::ui::icons::install(&mut fonts);
-
-    // Polices système à charger comme fallback pour les glyphes Unicode manquants.
-    // Ordre : symboles généraux → emoji → CJK.
-    #[cfg(target_os = "windows")]
-    let fallback_candidates: &[(&str, &str)] = &[
-        ("C:/Windows/Fonts/seguisym.ttf",  "SegoeSym"),   // symboles, box-drawing, flèches…
-        ("C:/Windows/Fonts/seguiemj.ttf",  "SegoeEmoji"), // emoji couleur
-        ("C:/Windows/Fonts/meiryo.ttc",    "Meiryo"),     // CJK japonais
-        ("C:/Windows/Fonts/simsun.ttc",    "SimSun"),     // CJK chinois
-    ];
-    #[cfg(not(target_os = "windows"))]
-    let fallback_candidates: &[(&str, &str)] = &[
-        ("/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",       "NotoSans"),
-        ("/usr/share/fonts/truetype/noto/NotoSansSymbols-Regular.ttf","NotoSymbols"),
-        ("/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",         "NotoEmoji"),
-    ];
-
-    for (path, name) in fallback_candidates {
-        if let Ok(bytes) = std::fs::read(path) {
-            fonts.font_data.insert(name.to_string(), egui::FontData::from_owned(bytes));
-            // Ajout en fin de liste = consulté seulement si le glyphe est absent des polices précédentes.
-            fonts.families.entry(egui::FontFamily::Proportional).or_default().push(name.to_string());
-            fonts.families.entry(egui::FontFamily::Monospace).or_default().push(name.to_string());
-        }
-    }
-
+    // Garde les polices par défaut d'egui (Ubuntu pour le texte, Hack pour le code).
+    let fonts = egui::FontDefinitions::default();
     ctx.set_fonts(fonts);
 
     // Ajuste les tailles de style tout en respectant le ratio terminal/UI.

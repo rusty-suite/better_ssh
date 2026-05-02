@@ -181,7 +181,7 @@ pub fn render(state: &mut NetworkScanState, ui: &mut Ui) -> ScanAction {
             ui.vertical_centered(|ui| {
                 ui.add_space(20.0);
                 ui.label(egui::RichText::new("Aucun résultat.").weak());
-                ui.label("Configurez la plage et appuyez sur Scanner.");
+                ui.label("Configurez la plage et appuyez sur ▶ Scanner.");
             });
         }
     } else {

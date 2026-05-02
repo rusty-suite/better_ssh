@@ -22,10 +22,6 @@ pub struct RemoteEntry {
     pub modified: Option<u64>,
     /// Bits de permissions Unix (ex: 0o755), si disponibles.
     pub permissions: Option<u32>,
-    /// UID du propriétaire (numérique POSIX), si disponible via SFTP.
-    pub owner_uid: Option<u32>,
-    /// GID du groupe propriétaire (numérique POSIX), si disponible via SFTP.
-    pub group_gid: Option<u32>,
 }
 
 // ─── Client SFTP ─────────────────────────────────────────────────────────────
@@ -55,8 +51,6 @@ impl SftpClient {
                 size: meta.size.unwrap_or(0),
                 modified: meta.mtime.map(|t| t as u64),
                 permissions: meta.permissions,
-                owner_uid: meta.uid,
-                group_gid: meta.gid,
             });
         }
         // Dossiers d'abord (pour ressembler à un explorateur standard).
@@ -102,23 +96,5 @@ impl SftpClient {
     pub async fn rename(&self, from: &str, to: &str) -> Result<()> {
         self.session.rename(from, to).await?;
         Ok(())
-    }
-
-    /// Supprime un répertoire distant vide (`rmdir`).
-    pub async fn remove_dir(&self, path: &str) -> Result<()> {
-        self.session.remove_dir(path).await?;
-        Ok(())
-    }
-
-    /// Crée un fichier distant vide.
-    pub async fn create_empty_file(&self, path: &str) -> Result<()> {
-        self.session.write(path, &[] as &[u8]).await?;
-        Ok(())
-    }
-
-    /// Retourne l'UID numérique de l'utilisateur courant en statant ".".
-    /// Le répertoire courant SFTP appartient à l'utilisateur connecté.
-    pub async fn get_current_uid(&self) -> Option<u32> {
-        self.session.metadata(".").await.ok()?.uid
     }
 }
