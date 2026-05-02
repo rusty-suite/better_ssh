@@ -2,8 +2,7 @@
 /// L'architecture est basée sur deux canaux crossbeam :
 ///   - `cmd_tx` : l'UI envoie des commandes vers la task SSH (saisie, resize, disconnect)
 ///   - `event_rx` : la task SSH envoie des événements vers l'UI (données, statut)
-/// Un canal mpsc dédié (`sftp_tx`) achemine les commandes SFTP vers la task SFTP.
-/// Les tasks tokio tournent en arrière-plan et ne bloquent jamais le thread egui.
+/// La task tokio tourne en arrière-plan et ne bloque jamais le thread egui.
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use crossbeam_channel::{Receiver, Sender};
@@ -12,26 +11,9 @@ use russh::keys::key::PublicKey;
 use russh::{ChannelMsg, Disconnect};
 use russh_sftp::client::SftpSession;
 use std::sync::Arc;
-use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
 
 use crate::config::{AuthMethod, ConnectionProfile};
-use crate::ssh::sftp::{RemoteEntry, SftpClient};
-
-// ─── Commandes SFTP ───────────────────────────────────────────────────────────
-
-/// Opérations SFTP demandées par l'UI à la task SFTP.
-#[derive(Debug)]
-pub enum SftpCommand {
-    ListDir(String),
-    Rename { from: String, to: String },
-    Delete(String),
-    DeleteDir(String),
-    Mkdir(String),
-    CreateFile(String),
-    MovePaths { paths: Vec<String>, dest: String },
-    Download { remote: String, local: std::path::PathBuf },
-}
 
 // ─── Types de messages ────────────────────────────────────────────────────────
 
@@ -61,12 +43,8 @@ pub enum SessionEvent {
     Error(String),
     /// Le fingerprint de l'hôte a changé → alerte MITM potentielle.
     FingerprintAlert { host: String, fingerprint: String },
-    /// Résultat d'un listage de répertoire SFTP.
-    SftpListing { path: String, entries: Vec<RemoteEntry> },
-    /// Résultat d'une opération SFTP (rename, delete, mkdir, etc.).
-    SftpOpResult { op: String, ok: bool, msg: String },
-    /// UID numérique de l'utilisateur connecté (déterminé au démarrage SFTP).
-    SftpUid(u32),
+    /// Résultat d'une opération SFTP (upload, etc.).
+    SftpOpResult { ok: bool, message: String },
 }
 
 // ─── Handler russh ────────────────────────────────────────────────────────────
@@ -89,6 +67,8 @@ impl client::Handler for ClientHandler {
     ) -> Result<bool, Self::Error> {
         let fp = server_public_key.fingerprint();
         log::debug!("Fingerprint serveur : {fp}");
+        // Pour l'instant on accepte tout et on log. La vérification known_hosts
+        // sera implémentée en Phase 2.
         Ok(true)
     }
 }
@@ -96,14 +76,12 @@ impl client::Handler for ClientHandler {
 // ─── Session publique ─────────────────────────────────────────────────────────
 
 /// Représente une session SSH active depuis le point de vue de l'UI.
-/// Wrapping thread-safe des canaux de communication vers les tasks async.
+/// Wrapping thread-safe des canaux de communication vers la task async.
 pub struct SshSession {
-    /// Canal pour envoyer des commandes PTY à la task SSH.
+    /// Canal pour envoyer des commandes à la task SSH.
     pub cmd_tx: Sender<SessionCommand>,
     /// Canal pour recevoir les événements de la task SSH.
     pub event_rx: Receiver<SessionEvent>,
-    /// Canal pour envoyer des commandes à la task SFTP.
-    sftp_tx: mpsc::UnboundedSender<SftpCommand>,
 }
 
 impl SshSession {
@@ -111,16 +89,15 @@ impl SshSession {
     pub fn connect(profile: ConnectionProfile, password: Option<String>) -> Self {
         let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded::<SessionCommand>();
         let (event_tx, event_rx) = crossbeam_channel::unbounded::<SessionEvent>();
-        let (sftp_tx, sftp_rx) = mpsc::unbounded_channel::<SftpCommand>();
 
         let etx = event_tx.clone();
         tokio::spawn(async move {
-            if let Err(e) = run_session(profile, password, cmd_rx, etx.clone(), sftp_rx).await {
+            if let Err(e) = run_session(profile, password, cmd_rx, etx.clone()).await {
                 let _ = etx.send(SessionEvent::Error(e.to_string()));
             }
         });
 
-        Self { cmd_tx, event_rx, sftp_tx }
+        Self { cmd_tx, event_rx }
     }
 
     /// Envoie des octets de saisie clavier vers le pseudo-terminal distant.
@@ -143,9 +120,9 @@ impl SshSession {
         self.event_rx.try_recv().ok()
     }
 
-    /// Envoie une commande SFTP à la task SFTP (non-bloquant).
-    pub fn send_sftp(&self, cmd: SftpCommand) {
-        let _ = self.sftp_tx.send(cmd);
+    /// Lance un upload SFTP en arrière-plan (le résultat arrive via SessionEvent::SftpOpResult).
+    pub fn upload_file(&self, content: Vec<u8>, remote_path: String) {
+        let _ = self.cmd_tx.send(SessionCommand::SftpUpload { content, remote_path });
     }
 }
 
@@ -154,53 +131,37 @@ impl SshSession {
 /// Boucle principale d'une session SSH. Tourne dans une tokio task.
 /// 1. Établit la connexion TCP et négocie SSH
 /// 2. Authentifie l'utilisateur
-/// 3. Ouvre un canal PTY + shell
-/// 4. Ouvre un canal SFTP (non-fatal si non supporté)
-/// 5. Relaie les données bidirectionnellement jusqu'à la déconnexion
+/// 3. Ouvre un canal avec pseudo-terminal
+/// 4. Relaie les données bidirectionnellement jusqu'à la déconnexion
 async fn run_session(
     profile: ConnectionProfile,
     password: Option<String>,
     cmd_rx: Receiver<SessionCommand>,
     event_tx: Sender<SessionEvent>,
-    sftp_rx: mpsc::UnboundedReceiver<SftpCommand>,
 ) -> Result<()> {
     // Configure le client SSH.
-    // inactivity_timeout = None : russh ne coupe pas de son côté après N secondes d'idle.
-    // keepalive_interval = 30 s : le client envoie un paquet SSH keepalive toutes les
-    //   30 secondes d'inactivité, ce qui empêche le serveur (sshd) de couper la connexion
-    //   à cause de son propre ClientAliveInterval.
-    // keepalive_max = 3 : si 3 keepalives consécutifs restent sans réponse, russh
-    //   déconnecte proprement au lieu de bloquer indéfiniment.
+    // inactivity_timeout = None : on laisse le serveur gérer les keepalives.
+    // Une valeur non-None ferait que russh déconnecte après N secondes sans message
+    // SSH au niveau protocole, ce qui ferme le shell interactif quand l'utilisateur
+    // ne tape rien pendant ce délai.
     let config = Arc::new(client::Config {
         inactivity_timeout: None,
-        keepalive_interval: Some(Duration::from_secs(30)),
-        keepalive_max: 3,
         ..<_>::default()
     });
 
     let handler = ClientHandler { event_tx: event_tx.clone() };
     let addr = format!("{}:{}", profile.host, profile.port);
-    log::info!("Connexion SSH → {} (utilisateur : {})", addr, profile.username);
 
     // Connexion TCP avec timeout global.
     let mut session = timeout(
         Duration::from_secs(profile.connection_timeout_secs),
-        client::connect(config, addr.clone(), handler),
+        client::connect(config, addr, handler),
     )
     .await
     .context("timeout de connexion")?
     .context("connexion TCP échouée")?;
 
-    log::info!("TCP établi → {}", addr);
-
     // Authentification selon la méthode choisie dans le profil.
-    let auth_method_name = match &profile.auth_method {
-        AuthMethod::Password => "password",
-        AuthMethod::PublicKey { .. } => "publickey",
-        AuthMethod::Agent => "agent",
-    };
-    log::info!("Authentification SSH : méthode={} utilisateur={}", auth_method_name, profile.username);
-
     let authenticated = match &profile.auth_method {
         AuthMethod::Password => {
             let pw = password.unwrap_or_default();
@@ -225,10 +186,8 @@ async fn run_session(
     };
 
     if !authenticated {
-        log::warn!("Authentification refusée : utilisateur={} hôte={}", profile.username, addr);
         anyhow::bail!("Authentification refusée pour l'utilisateur '{}'", profile.username);
     }
-    log::info!("Authentifié avec succès → {}", addr);
 
     // Ouvre un canal de session avec un pseudo-terminal (PTY) pour le shell interactif.
     let mut channel = session
@@ -244,29 +203,6 @@ async fn run_session(
     channel.request_shell(true).await.context("demande shell")?;
 
     let _ = event_tx.send(SessionEvent::Connected);
-
-    // Ouvre un second canal pour le sous-système SFTP (non-fatal).
-    // Les commandes SFTP envoyées avant que le canal soit prêt sont mises en attente
-    // dans le canal mpsc et traitées dès que run_sftp_handler démarre.
-    match session.channel_open_session().await {
-        Ok(sftp_ch) => {
-            if sftp_ch.request_subsystem(true, "sftp").await.is_ok() {
-                match russh_sftp::client::SftpSession::new(sftp_ch.into_stream()).await {
-                    Ok(sftp_session) => {
-                        let sftp_client = SftpClient::new(sftp_session);
-                        let etx = event_tx.clone();
-                        tokio::spawn(async move {
-                            run_sftp_handler(sftp_client, sftp_rx, etx).await;
-                        });
-                    }
-                    Err(e) => log::warn!("Échec d'initialisation SFTP : {e}"),
-                }
-            } else {
-                log::warn!("Le serveur ne supporte pas le sous-système SFTP");
-            }
-        }
-        Err(e) => log::warn!("Impossible d'ouvrir le canal SFTP : {e}"),
-    }
 
     // ── Boucle I/O bidirectionnelle ───────────────────────────────────────────
     // exit_code : rempli quand le serveur envoie ExitStatus avant Close.
@@ -303,14 +239,12 @@ async fn run_session(
                     .await;
                     let _ = event_tx.send(match upload_result {
                         Ok(n) => SessionEvent::SftpOpResult {
-                            op: format!("upload {}", remote_path),
                             ok: true,
-                            msg: format!("Transfert réussi — {} octets", n),
+                            message: format!("OK Transfert réussi — {} → {} octets", remote_path, n),
                         },
                         Err(e) => SessionEvent::SftpOpResult {
-                            op: format!("upload {}", remote_path),
                             ok: false,
-                            msg: format!("Erreur upload SFTP : {}", e),
+                            message: format!("ERREUR SFTP : {}", e),
                         },
                     });
                 }
@@ -342,6 +276,8 @@ async fn run_session(
                     let _ = event_tx.send(SessionEvent::Data(data.to_vec()));
                 }
                 // Le serveur indique que le processus shell s'est terminé.
+                // On garde le code de sortie mais on n'interrompt pas encore :
+                // le serveur enverra Eof puis Close immédiatement après.
                 ChannelMsg::ExitStatus { exit_status } => {
                     exit_code = Some(exit_status);
                 }
@@ -362,124 +298,9 @@ async fn run_session(
                     let _ = event_tx.send(SessionEvent::Disconnected(msg));
                     return Ok(());
                 }
+                // Succès/échec d'une requête (pty, shell…) — ignoré silencieusement.
                 _ => {}
             },
-        }
-    }
-}
-
-// ─── Gestionnaire SFTP async ──────────────────────────────────────────────────
-
-/// Traite les commandes SFTP reçues via le canal mpsc et renvoie les résultats
-/// via `event_tx`. S'arrête naturellement quand `sftp_tx` est abandonné
-/// (session fermée → SshSession droppée).
-async fn run_sftp_handler(
-    client: SftpClient,
-    mut sftp_rx: mpsc::UnboundedReceiver<SftpCommand>,
-    event_tx: Sender<SessionEvent>,
-) {
-    // Détermine l'UID de l'utilisateur courant en statant "." (son répertoire home).
-    if let Some(uid) = client.get_current_uid().await {
-        let _ = event_tx.send(SessionEvent::SftpUid(uid));
-    }
-
-    while let Some(cmd) = sftp_rx.recv().await {
-        match cmd {
-            SftpCommand::ListDir(path) => {
-                log::debug!("SFTP list : {}", path);
-                match client.list_dir(&path).await {
-                    Ok(entries) => {
-                        log::debug!("SFTP list OK : {} entrées dans {}", entries.len(), path);
-                        let _ = event_tx.send(SessionEvent::SftpListing { path, entries });
-                    }
-                    Err(e) => {
-                        log::warn!("SFTP list échoué : {} — {}", path, e);
-                        let _ = event_tx.send(SessionEvent::SftpOpResult {
-                            op: format!("list {path}"),
-                            ok: false,
-                            msg: e.to_string(),
-                        });
-                    }
-                }
-            }
-            SftpCommand::Rename { from, to } => {
-                log::debug!("SFTP rename : {} → {}", from, to);
-                let result = client.rename(&from, &to).await;
-                if let Err(ref e) = result { log::warn!("SFTP rename échoué : {}", e); }
-                let _ = event_tx.send(SessionEvent::SftpOpResult {
-                    op: "rename".into(),
-                    ok: result.is_ok(),
-                    msg: result.err().map(|e| e.to_string()).unwrap_or_default(),
-                });
-            }
-            SftpCommand::Delete(path) => {
-                log::debug!("SFTP delete : {}", path);
-                let result = client.remove_file(&path).await;
-                if let Err(ref e) = result { log::warn!("SFTP delete échoué : {}", e); }
-                let _ = event_tx.send(SessionEvent::SftpOpResult {
-                    op: "delete".into(),
-                    ok: result.is_ok(),
-                    msg: result.err().map(|e| e.to_string()).unwrap_or_default(),
-                });
-            }
-            SftpCommand::DeleteDir(path) => {
-                log::debug!("SFTP rmdir : {}", path);
-                let result = client.remove_dir(&path).await;
-                if let Err(ref e) = result { log::warn!("SFTP rmdir échoué : {}", e); }
-                let _ = event_tx.send(SessionEvent::SftpOpResult {
-                    op: "rmdir".into(),
-                    ok: result.is_ok(),
-                    msg: result.err().map(|e| e.to_string()).unwrap_or_default(),
-                });
-            }
-            SftpCommand::Mkdir(path) => {
-                log::debug!("SFTP mkdir : {}", path);
-                let result = client.mkdir(&path).await;
-                if let Err(ref e) = result { log::warn!("SFTP mkdir échoué : {}", e); }
-                let _ = event_tx.send(SessionEvent::SftpOpResult {
-                    op: "mkdir".into(),
-                    ok: result.is_ok(),
-                    msg: result.err().map(|e| e.to_string()).unwrap_or_default(),
-                });
-            }
-            SftpCommand::CreateFile(path) => {
-                log::debug!("SFTP create : {}", path);
-                let result = client.create_empty_file(&path).await;
-                if let Err(ref e) = result { log::warn!("SFTP create échoué : {}", e); }
-                let _ = event_tx.send(SessionEvent::SftpOpResult {
-                    op: "create".into(),
-                    ok: result.is_ok(),
-                    msg: result.err().map(|e| e.to_string()).unwrap_or_default(),
-                });
-            }
-            SftpCommand::MovePaths { paths, dest } => {
-                log::debug!("SFTP move : {} élément(s) → {}", paths.len(), dest);
-                let mut errors = Vec::new();
-                for path in &paths {
-                    let filename = path.rsplit('/').next().unwrap_or(path.as_str());
-                    let target = format!("{}/{}", dest.trim_end_matches('/'), filename);
-                    if let Err(e) = client.rename(path, &target).await {
-                        log::warn!("SFTP move échoué : {} → {} : {}", path, target, e);
-                        errors.push(e.to_string());
-                    }
-                }
-                let ok = errors.is_empty();
-                let _ = event_tx.send(SessionEvent::SftpOpResult {
-                    op: format!("move {} élément(s)", paths.len()),
-                    ok,
-                    msg: errors.join("; "),
-                });
-            }
-            SftpCommand::Download { remote, local } => {
-                log::debug!("SFTP download : {} → {}", remote, local.display());
-                let result = client.download_file(&remote, &local).await;
-                if let Err(ref e) = result { log::warn!("SFTP download échoué : {}", e); }
-                let _ = event_tx.send(SessionEvent::SftpOpResult {
-                    op: "download".into(),
-                    ok: result.is_ok(),
-                    msg: result.err().map(|e| e.to_string()).unwrap_or_default(),
-                });
-            }
         }
     }
 }
