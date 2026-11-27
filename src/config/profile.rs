@@ -47,10 +47,14 @@ pub struct ConnectionProfile {
     /// Nom affiché dans la barre latérale (ex: "Serveur Web Prod").
     pub name: String,
     /// Adresse IP ou nom d'hôte DNS.
+    /// Stocké uniquement dans le vault chiffré — jamais en clair sur le disque.
+    #[serde(skip)]
     pub host: String,
     /// Port SSH (22 par défaut).
     pub port: u16,
     /// Nom d'utilisateur pour la connexion.
+    /// Stocké uniquement dans le vault chiffré — jamais en clair sur le disque.
+    #[serde(skip)]
     pub username: String,
     /// Méthode d'authentification choisie.
     pub auth_method: AuthMethod,

@@ -1,0 +1,5 @@
+# Fins de ligne normalisées (LF dans le dépôt) : évite les diffs « fichier entier »
+# qui rendaient les merges entre Windows et Linux illisibles.
+* text=auto
+*.png binary
+*.ico binary
