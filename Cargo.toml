@@ -4,7 +4,7 @@ version = "0.2.0"
 edition = "2021"
 authors = ["rusty-suite"]
 description = "A modern, secure SSH client with multi-tab sessions, network scanner, SFTP explorer and encrypted password vault"
-license = "PolyForm-Noncommercial-1.0.0"
+license = "GPL-3.0-or-later"
 repository = "https://github.com/rusty-suite/better_ssh"
 homepage = "https://github.com/rusty-suite/better_ssh"
 documentation = "https://github.com/rusty-suite/better_ssh#readme"
@@ -62,7 +62,7 @@ icon = ["assets/icon.ico", "assets/icon.png"]
 version = "0.2.0"
 short_description = "Modern SSH Client"
 long_description = "A modern, secure SSH client built with Rust and egui — multi-tab sessions, network scanner, SFTP explorer and encrypted password vault"
-copyright = "© 2025 rusty-suite — PolyForm Noncommercial License 1.0.0"
+copyright = "© 2025 rusty-suite — GNU GPL v3 or later"
 
 [dev-dependencies]
 tempfile = "3"
