@@ -123,17 +123,17 @@ pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
                             if resp.double_clicked() { to_open = Some(i); }
                             // Menu contextuel (clic droit) sur la ligne du profil.
                             resp.context_menu(|ui| {
-                                if ui.button(format!("{} Connecter", ph::PLUG)).clicked() {
+                                if ui.button(format!("{} {}", ph::PLUG, app.lang.btn_connect)).clicked() {
                                     to_connect_direct = Some(i);
                                     ui.close_menu();
                                 }
                                 ui.separator();
-                                if ui.button(format!("{} Modifier", ph::PENCIL)).clicked() {
+                                if ui.button(format!("{} {}", ph::PENCIL, app.lang.sidebar_edit_hint)).clicked() {
                                     to_edit = Some(i);
                                     ui.close_menu();
                                 }
                                 if ui.button(
-                                    egui::RichText::new(format!("{} Supprimer", ph::TRASH))
+                                    egui::RichText::new(format!("{} {}", ph::TRASH, app.lang.btn_delete))
                                         .color(egui::Color32::from_rgb(220, 70, 70))
                                 ).clicked() {
                                     to_delete = Some(i);
@@ -416,7 +416,7 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                             if enter_in(&resp, ui) { focus_next = true; }
                             if profile.host.is_empty() {
                                 ui.label(
-                                    egui::RichText::new(format!("{} Adresse manquante — à renseigner", ph::WARNING))
+                                    egui::RichText::new(format!("{} {}", ph::WARNING, app.lang.sidebar_missing_host))
                                         .small()
                                         .color(egui::Color32::from_rgb(240, 160, 40)),
                                 );
@@ -456,7 +456,7 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
 
                         ui.label(&app.lang.dlg_field_auth);
                         egui::ComboBox::new("auth_method_combo", "")
-                            .selected_text(profile.auth_method.to_string())
+                            .selected_text(app.lang.auth_method(&profile.auth_method))
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(
                                     &mut profile.auth_method, AuthMethod::Password,
@@ -639,7 +639,7 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
         let vault = Vault::new(vault_key_input.clone());
         match vault.master_key_ok() {
             Ok(MasterKeyCheck::Wrong) => {
-                app.sidebar.vault_error = Some("Mot de passe incorrect.".into());
+                app.sidebar.vault_error = Some(app.lang.vault_wrong_password.clone());
             }
             _ => {
                 app.sidebar.vault_error = None;

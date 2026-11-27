@@ -1,6 +1,7 @@
 /// Widget terminal interactif.
 /// Parse les séquences ANSI/VT100 et affiche le texte avec les couleurs correspondantes.
 /// La saisie est gérée par un champ de texte egui en bas du panneau.
+use crate::i18n::Lang;
 use egui::{Color32, FontId, Key, Modifiers, ScrollArea, Ui};
 use std::collections::VecDeque;
 
@@ -11,14 +12,15 @@ const MAX_LINES: usize = 10_000;
 /// Nombre maximal de commandes dans l'historique de session (par onglet).
 const MAX_SESSION_HISTORY: usize = 50;
 
-/// Préréglages de taille de police avec leur label et leur taille en points.
+/// Préréglages de taille de police : identifiant stable (stocké dans la config)
+/// et taille en points. Le libellé affiché vient de `Lang::font_preset_label`.
 pub const FONT_PRESETS: &[(&str, f32)] = &[
-    ("Minuscule",    9.0),
-    ("Petite",      11.0),
-    ("Normale",     13.0),
-    ("Confortable", 15.0),
-    ("Grande",      18.0),
-    ("Énorme",      22.0),
+    ("tiny",         9.0),
+    ("small",       11.0),
+    ("normal",      13.0),
+    ("comfortable", 15.0),
+    ("large",       18.0),
+    ("huge",        22.0),
 ];
 
 // ─── Structures de rendu ──────────────────────────────────────────────────────
@@ -459,7 +461,7 @@ fn extract_cmd_from_line(spans: &[TermSpan]) -> Option<String> {
 /// Retourne les octets à envoyer au serveur SSH si l'utilisateur a validé une saisie,
 /// `None` sinon (pas de saisie cette frame).
 /// `modal_open` : si true, le terminal ne vole pas le focus (un dialogue est ouvert).
-pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Option<Vec<u8>> {
+pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool, lang: &Lang) -> Option<Vec<u8>> {
     // Couleur de fond du terminal (inspirée du thème Dracula).
     let bg = Color32::from_rgb(20, 20, 30);
 
@@ -886,11 +888,10 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
                                 .show(ui, |ui| {
                                     // En-tête discret.
                                     ui.label(
-                                        egui::RichText::new(format!(
-                                            " Historique ({}/{})",
-                                            selected_idx.map(|i| i + 1).unwrap_or(0),
-                                            hist.len()
-                                        ))
+                                        egui::RichText::new(Lang::fmt(&lang.term_history, &[
+                                            ("i", &selected_idx.map(|i| i + 1).unwrap_or(0).to_string()),
+                                            ("n", &hist.len().to_string()),
+                                        ]))
                                         .small()
                                         .color(Color32::from_rgb(120, 120, 180)),
                                     );
@@ -1051,13 +1052,13 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
     frame_resp.response.context_menu(|ui| {
         // "Copier" : visible si du texte a déjà été sélectionné.
         if !selected_snapshot.is_empty() {
-            if ui.button("📋 Copier la sélection").clicked() {
+            if ui.button(&lang.term_copy).clicked() {
                 do_copy = true;
                 ui.close_menu();
             }
         } else {
-            ui.add_enabled(false, egui::Button::new("📋 Copier la sélection"))
-                .on_disabled_hover_text("Sélectionnez du texte avec la souris d'abord");
+            ui.add_enabled(false, egui::Button::new(&lang.term_copy))
+                .on_disabled_hover_text(&lang.term_copy_hint);
         }
 
         ui.separator();
@@ -1066,17 +1067,17 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
         if !clipboard_snapshot.is_empty() {
             let preview: String = clipboard_snapshot.chars().take(40).collect();
             let label = if clipboard_snapshot.len() > 40 {
-                format!("📋 Coller  « {}… »", preview)
+                format!("{}  « {}… »", lang.term_paste, preview)
             } else {
-                format!("📋 Coller  « {} »", preview)
+                format!("{}  « {} »", lang.term_paste, preview)
             };
             if ui.button(label).clicked() {
                 do_paste = true;
                 ui.close_menu();
             }
         } else {
-            ui.add_enabled(false, egui::Button::new("📋 Coller"))
-                .on_disabled_hover_text("Presse-papiers vide");
+            ui.add_enabled(false, egui::Button::new(&lang.term_paste))
+                .on_disabled_hover_text(&lang.term_clipboard_empty);
         }
     });
 
@@ -1093,7 +1094,7 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
         let mut confirmed = false;
         let mut cancelled = false;
 
-        egui::Window::new("📤 Transfert de fichier")
+        egui::Window::new(&lang.term_upload_title)
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -1102,15 +1103,15 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
                     .num_columns(2)
                     .spacing([8.0, 6.0])
                     .show(ui, |ui| {
-                        ui.strong("Fichier :");
+                        ui.strong(&lang.term_upload_file);
                         ui.label(&pending.filename);
                         ui.end_row();
 
-                        ui.strong("Taille :");
-                        ui.label(format_size(pending.content.len()));
+                        ui.strong(&lang.term_upload_size);
+                        ui.label(lang.format_size(pending.content.len() as u64));
                         ui.end_row();
 
-                        ui.strong("Destination :");
+                        ui.strong(&lang.term_upload_dest);
                         ui.text_edit_singleline(&mut pending.remote_path);
                         ui.end_row();
                     });
@@ -1120,8 +1121,8 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool) -> Optio
                 ui.add_space(4.0);
 
                 ui.horizontal(|ui| {
-                    if ui.button("✅ Transférer").clicked() { confirmed = true; }
-                    if ui.button("Annuler").clicked()         { cancelled = true; }
+                    if ui.button(&lang.term_upload_btn).clicked() { confirmed = true; }
+                    if ui.button(&lang.dlg_cancel_btn).clicked() { cancelled = true; }
                 });
             });
 
@@ -1155,12 +1156,4 @@ fn line_to_job(line: &TermLine, font_id: &FontId) -> egui::text::LayoutJob {
     job
 }
 
-fn format_size(bytes: usize) -> String {
-    if bytes < 1024 {
-        format!("{} o", bytes)
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1} Ko", bytes as f64 / 1024.0)
-    } else {
-        format!("{:.1} Mo", bytes as f64 / (1024.0 * 1024.0))
-    }
-}
+

@@ -5,7 +5,7 @@ use crate::config::{AppConfig, AuthMethod, ConnectionProfile, Vault};
 use crate::i18n::{Lang, LangFile};
 use crate::network::scanner::ScanResult;
 use crate::network::TelnetSession;
-use crate::ssh::session::{SessionCommand, SessionEvent, SftpCommand, SshSession};
+use crate::ssh::session::{SessionCommand, SessionEvent, SftpCommand, SftpOp, SshSession};
 use crate::ui::{
     file_explorer::FileExplorerState,
     network_scan::NetworkScanState,
@@ -218,7 +218,7 @@ impl BetterSshApp {
             tabs: Vec::new(),
             active_tab: 0,
             next_tab_id: 1,
-            snippets: SnippetsState::new(),
+            snippets: SnippetsState::new(&lang),
             network_scan: NetworkScanState::new(),
             show_snippets: false,
             show_network_scan: false,
@@ -469,7 +469,7 @@ fn poll_session_events(app: &mut BetterSshApp) {
             match event {
                 SessionEvent::Connected => {
                     tab.connected = true;
-                    tab.terminal.feed(b"\x1b[32mConnexion SSH etablie.\x1b[0m\r\n");
+                    tab.terminal.feed(format!("\x1b[32m{}\x1b[0m\r\n", app.lang.app_ssh_connected).as_bytes());
                     // Déclenche le premier listage SFTP si l'explorateur est ouvert.
                     // La commande est mise en attente dans le canal mpsc et traitée dès
                     // que run_sftp_handler démarre (après l'init du sous-système SFTP).
@@ -484,17 +484,23 @@ fn poll_session_events(app: &mut BetterSshApp) {
                 SessionEvent::Data(data) => {
                     tab.terminal.feed(&data);
                 }
-                SessionEvent::Disconnected(msg) => {
+                SessionEvent::Disconnected(reason) => {
                     tab.connected = false;
-                    let text = format!("\r\n\x1b[33m[Session terminée : {}]\x1b[0m\r\n", msg);
+                    let msg = Lang::fmt(&app.lang.app_ssh_disconnected, &[("msg", &reason.text(&app.lang))]);
+                    let text = format!("\r\n\x1b[33m[{msg}]\x1b[0m\r\n");
                     tab.terminal.feed(text.as_bytes());
                     tab.session = None;
                 }
                 SessionEvent::Error(err) => {
                     tab.connected = false;
-                    let text = format!("\r\n\x1b[31mErreur SSH : {}\x1b[0m\r\n", err);
+                    let msg = Lang::fmt(&app.lang.app_ssh_error, &[("err", &err.text(&app.lang))]);
+                    let text = format!("\r\n\x1b[31m{msg}\x1b[0m\r\n");
                     tab.terminal.feed(text.as_bytes());
                     tab.session = None;
+                }
+                SessionEvent::Signal(sig) => {
+                    let msg = Lang::fmt(&app.lang.app_ssh_signal, &[("sig", &sig)]);
+                    tab.terminal.feed(format!("\r\n\x1b[31m{msg}\x1b[0m\r\n").as_bytes());
                 }
                 SessionEvent::FingerprintAlert { host, fingerprint } => {
                     log::warn!("Alerte fingerprint MITM : {host} — {fingerprint}");
@@ -514,15 +520,14 @@ fn poll_session_events(app: &mut BetterSshApp) {
                 }
                 SessionEvent::SftpOpResult { op, ok, msg } => {
                     // Détecte les erreurs de listage de répertoire.
-                    let is_list_op = op.starts_with("list ");
-                    let listed_path = if is_list_op {
-                        Some(op.trim_start_matches("list ").to_string())
-                    } else {
-                        None
+                    let listed_path = match &op {
+                        SftpOp::List(path) => Some(path.clone()),
+                        _ => None,
                     };
+                    let op_text = op.text(&app.lang);
 
                     if ok {
-                        tab.file_explorer.add_toast(format!("✓ {op}"));
+                        tab.file_explorer.add_toast(format!("✓ {op_text}"));
                         // Rafraîchit le répertoire courant après toute opération réussie.
                         let path = tab.file_explorer.current_path.clone();
                         tab.file_explorer.loading = true;
@@ -535,14 +540,14 @@ fn poll_session_events(app: &mut BetterSshApp) {
                             || msg.to_lowercase().contains("denied")
                             || msg.contains("3")  // code SFTP 3 = permission denied
                         {
-                            "Accès refusé — droits insuffisants pour lire ce répertoire.".into()
+                            app.lang.sftp_access_denied.clone()
                         } else {
-                            format!("Impossible de lire le répertoire : {msg}")
+                            Lang::fmt(&app.lang.sftp_read_error, &[("msg", &msg)])
                         };
                         tab.file_explorer.loading   = false;
                         tab.file_explorer.dir_error = Some(label);
                     } else {
-                        tab.file_explorer.add_toast(format!("✗ {op} : {msg}"));
+                        tab.file_explorer.add_toast(format!("✗ {op_text} : {msg}"));
                     }
                 }
             }
