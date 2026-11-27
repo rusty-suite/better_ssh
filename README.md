@@ -127,4 +127,9 @@ Pre-built binaries are available on the [Releases](https://github.com/rusty-suit
 
 ## License
 
-PolyForm Noncommercial
+Copyright © rusty-suite.
+
+This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version (`GPL-3.0-or-later`).
+See [LICENSE](LICENSE) for the full text.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY.

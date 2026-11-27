@@ -20,7 +20,7 @@ pub const APP_DESCRIPTION: &str = env!("CARGO_PKG_DESCRIPTION");
 /// URL du dépôt GitHub officiel.
 pub const APP_REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 
-/// Identifiant SPDX de la licence (ex. "PolyForm-Noncommercial-1.0.0").
+/// Identifiant SPDX de la licence (ex. "GPL-3.0-or-later").
 pub const APP_LICENSE: &str = env!("CARGO_PKG_LICENSE");
 
 /// Octets bruts de l'icône PNG 256×256 (Linux, barre de titre egui).
