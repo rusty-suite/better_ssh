@@ -209,19 +209,14 @@ fn fmt_perms(p: u32) -> String {
     format!("{}{}{}", b(p >> 6 & 7), b(p >> 3 & 7), b(p & 7))
 }
 
-fn fmt_size(s: u64) -> String {
-    if s < 1024 { format!("{s} o") }
-    else if s < 1_048_576 { format!("{:.1} Ko", s as f64 / 1024.0) }
-    else if s < 1_073_741_824 { format!("{:.1} Mo", s as f64 / 1_048_576.0) }
-    else { format!("{:.2} Go", s as f64 / 1_073_741_824.0) }
-}
-
+/// Date de modification (horodatage Unix) au format ISO, dans le fuseau local.
+/// Le calcul passe par chrono : années bissextiles et longueurs de mois exactes.
 fn fmt_date(ts: u64) -> String {
-    let days = ts / 86400;
-    let y = 1970 + days / 365;
-    let m = (days % 365) / 30 + 1;
-    let d = (days % 365) % 30 + 1;
-    format!("{y:04}-{m:02}-{d:02}")
+    i64::try_from(ts)
+        .ok()
+        .and_then(|secs| chrono::DateTime::from_timestamp(secs, 0))
+        .map(|utc| utc.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| "—".into())
 }
 
 fn access_label(
@@ -615,7 +610,7 @@ fn render_list(
                             lang.fe_hover_access, username,
                             access_label(entry, username, current_uid, lang),
                             lang.fe_hover_size,
-                            if entry.is_dir { "—".into() } else { fmt_size(entry.size) },
+                            if entry.is_dir { "—".into() } else { lang.format_size(entry.size) },
                             lang.fe_hover_modified,
                             entry.modified.map(fmt_date).unwrap_or_else(|| "—".into()),
                         );
@@ -626,7 +621,7 @@ fn render_list(
                         resp.context_menu(|ui| ctx_menu(state, ui, lang, Some(&entry.path), entry.is_dir, req));
 
                         ui.label(egui::RichText::new(&perm_s).monospace().small().color(color));
-                        let sz = if entry.is_dir { "—".into() } else { fmt_size(entry.size) };
+                        let sz = if entry.is_dir { "—".into() } else { lang.format_size(entry.size) };
                         ui.label(egui::RichText::new(&sz).small());
                         let dt = entry.modified.map(fmt_date).unwrap_or_else(|| "—".into());
                         ui.label(egui::RichText::new(&dt).small().weak());
@@ -722,7 +717,7 @@ fn render_grid(
                         lang.fe_hover_access, username,
                         access_label(entry, username, current_uid, lang),
                         lang.fe_hover_size,
-                        if entry.is_dir { "—".into() } else { fmt_size(entry.size) },
+                        if entry.is_dir { "—".into() } else { lang.format_size(entry.size) },
                         lang.fe_hover_modified,
                         entry.modified.map(fmt_date).unwrap_or_else(|| "—".into()),
                     );

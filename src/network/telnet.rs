@@ -7,7 +7,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration};
 
-use crate::ssh::session::{SessionCommand, SessionEvent};
+use crate::ssh::session::{ConnectStep, EndReason, SessionCommand, SessionError, SessionEvent};
 
 // ─── Session publique ─────────────────────────────────────────────────────────
 
@@ -27,7 +27,8 @@ impl TelnetSession {
         let etx = event_tx.clone();
         tokio::spawn(async move {
             if let Err(e) = run_telnet(host, port, cmd_rx, etx.clone()).await {
-                let _ = etx.send(SessionEvent::Error(e.to_string()));
+                log::warn!("Session Telnet terminée en erreur : {e:#}");
+                let _ = etx.send(SessionEvent::Error(SessionError::from_anyhow(&e)));
             }
         });
 
@@ -61,8 +62,8 @@ async fn run_telnet(
     let addr = format!("{}:{}", host, port);
     let mut stream = timeout(Duration::from_secs(30), TcpStream::connect(&addr))
         .await
-        .context("timeout de connexion Telnet")?
-        .context("connexion TCP échouée")?;
+        .context(ConnectStep::Timeout)?
+        .context(ConnectStep::Tcp)?;
 
     let _ = event_tx.send(SessionEvent::Connected);
 
@@ -77,9 +78,7 @@ async fn run_telnet(
                     stream.write_all(&data).await?;
                 }
                 SessionCommand::Disconnect => {
-                    let _ = event_tx.send(SessionEvent::Disconnected(
-                        "Déconnecté par l'utilisateur".into(),
-                    ));
+                    let _ = event_tx.send(SessionEvent::Disconnected(EndReason::ByUser));
                     return Ok(());
                 }
                 // Resize et SftpUpload ne s'appliquent pas au Telnet.
@@ -91,7 +90,7 @@ async fn run_telnet(
         match timeout(Duration::from_millis(50), stream.read(&mut buf)).await {
             Err(_) => continue,
             Ok(Ok(0)) => {
-                let _ = event_tx.send(SessionEvent::Disconnected("Connexion fermée".into()));
+                let _ = event_tx.send(SessionEvent::Disconnected(EndReason::ClosedByServer));
                 return Ok(());
             }
             Ok(Ok(n)) => {

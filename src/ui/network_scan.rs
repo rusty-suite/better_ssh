@@ -2,6 +2,7 @@
 /// Permet de découvrir automatiquement les serveurs SSH sur le réseau local,
 /// de modifier les paramètres de recherche et de se connecter en un clic.
 use crate::network::scanner::{detect_local_subnet, NetworkScanner, ScanEvent, ScanParams, ScanResult};
+use crate::i18n::Lang;
 use crossbeam_channel::Receiver;
 use egui::Ui;
 
@@ -66,11 +67,12 @@ impl NetworkScanState {
     // ─── Lancement / arrêt du scan ────────────────────────────────────────────
 
     /// Parse la plage cible et démarre le scan en arrière-plan (tokio::spawn).
-    fn start_scan(&mut self) {
+    fn start_scan(&mut self, lang: &Lang) {
         let ips = match NetworkScanner::parse_range(&self.params.target) {
             Ok(i) => i,
             Err(e) => {
-                self.error = Some(format!("Plage invalide : {e}"));
+                log::warn!("Plage de scan invalide « {} » : {e}", self.params.target);
+                self.error = Some(Lang::fmt(&lang.scan_invalid_range, &[("range", &self.params.target)]));
                 return;
             }
         };
@@ -138,17 +140,17 @@ impl NetworkScanState {
 // ─── Rendu egui ──────────────────────────────────────────────────────────────
 
 /// Affiche le panneau complet et retourne une éventuelle action vers l'app parente.
-pub fn render(state: &mut NetworkScanState, ui: &mut Ui) -> ScanAction {
+pub fn render(state: &mut NetworkScanState, ui: &mut Ui, lang: &Lang) -> ScanAction {
     // Collecte d'abord les résultats arrivés depuis la dernière frame.
     state.poll_events();
 
     let mut action = ScanAction::None;
 
-    ui.heading("🔍 Scan réseau SSH");
+    ui.heading(format!("🔍 {}", lang.scan_window_title));
     ui.separator();
 
     // ── Paramètres ────────────────────────────────────────────────────────────
-    render_params_panel(state, ui);
+    render_params_panel(state, ui, lang);
 
     // ── Messages d'état ───────────────────────────────────────────────────────
     if let Some(err) = &state.error.clone() {
@@ -162,7 +164,7 @@ pub fn render(state: &mut NetworkScanState, ui: &mut Ui) -> ScanAction {
             let elapsed_ratio = 1.0 - pct;
             let remaining = total - done;
             // Estimation grossière basée sur le débit moyen observé.
-            format!("  ~{} restants", remaining)
+            Lang::fmt_n(&lang.scan_remaining, remaining)
         } else {
             String::new()
         };
@@ -180,40 +182,38 @@ pub fn render(state: &mut NetworkScanState, ui: &mut Ui) -> ScanAction {
         if !state.scanning {
             ui.vertical_centered(|ui| {
                 ui.add_space(20.0);
-                ui.label(egui::RichText::new("Aucun résultat.").weak());
-                ui.label("Configurez la plage et appuyez sur Scanner.");
+                ui.label(egui::RichText::new(&lang.scan_no_results).weak());
+                ui.label(&lang.scan_no_results_hint);
             });
         }
     } else {
-        render_results_table(state, ui, &mut action);
+        render_results_table(state, ui, &mut action, lang);
     }
 
     action
 }
 
 /// Affiche le bloc de paramètres (pliable) avec boutons Scanner / Arrêter / Réinitialiser.
-fn render_params_panel(state: &mut NetworkScanState, ui: &mut Ui) {
+fn render_params_panel(state: &mut NetworkScanState, ui: &mut Ui, lang: &Lang) {
     // En-tête cliquable pour plier/déplier les paramètres.
     ui.horizontal(|ui| {
         let arrow = if state.show_params { "v" } else { ">" };
-        if ui.button(format!("{arrow} Paramètres")).clicked() {
+        if ui.button(format!("{arrow} {}", lang.scan_params)).clicked() {
             state.show_params = !state.show_params;
         }
 
         // Boutons de contrôle toujours visibles même quand les params sont pliés.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if state.scanning {
-                if ui.button("⏹ Arrêter").clicked() {
+                if ui.button(&lang.scan_stop).clicked() {
                     state.stop_scan();
                 }
-                ui.add_enabled(false, egui::Button::new("⏳ Scan en cours…"));
+                ui.add_enabled(false, egui::Button::new(&lang.scan_running));
             } else {
-                if ui.button("Scanner").clicked() {
-                    state.start_scan();
+                if ui.button(&lang.scan_start).clicked() {
+                    state.start_scan(lang);
                 }
-                if ui.button("🔄 Réinitialiser").on_hover_text(
-                    "Remet les paramètres à leurs valeurs détectées automatiquement"
-                ).clicked() {
+                if ui.button(&lang.scan_reset).on_hover_text(&lang.scan_reset_hint).clicked() {
                     state.reset_params();
                 }
             }
@@ -234,22 +234,22 @@ fn render_params_panel(state: &mut NetworkScanState, ui: &mut Ui) {
                 .spacing([12.0, 6.0])
                 .show(ui, |ui| {
                     // ── Plage cible ───────────────────────────────────────────
-                    ui.label("Plage cible :");
+                    ui.label(&lang.scan_target);
                     ui.add(
                         egui::TextEdit::singleline(&mut state.params.target)
                             .desired_width(160.0)
-                            .hint_text("192.168.1.0/24 ou 192.168.1.1-254"),
+                            .hint_text(&lang.scan_target_hint),
                     );
                     // Indicateur du sous-réseau auto-détecté
                     ui.label(
-                        egui::RichText::new(format!("(détecté : {})", state.default_params.target))
+                        egui::RichText::new(Lang::fmt(&lang.scan_detected, &[("value", &state.default_params.target)]))
                             .small()
                             .weak(),
                     );
                     ui.end_row();
 
                     // ── Port SSH ──────────────────────────────────────────────
-                    ui.label("Port SSH :");
+                    ui.label(&lang.field_ssh_port);
                     let mut port_str = state.params.ssh_port.to_string();
                     if ui
                         .add(egui::TextEdit::singleline(&mut port_str).desired_width(60.0))
@@ -257,30 +257,30 @@ fn render_params_panel(state: &mut NetworkScanState, ui: &mut Ui) {
                     {
                         state.params.ssh_port = port_str.parse().unwrap_or(22);
                     }
-                    ui.label(egui::RichText::new("(22 par défaut)").small().weak());
+                    ui.label(egui::RichText::new(&lang.scan_port_default).small().weak());
                     ui.end_row();
 
                     // ── Délai de timeout ──────────────────────────────────────
-                    ui.label("Délai (ms) :");
+                    ui.label(&lang.scan_delay);
                     ui.add(
                         egui::Slider::new(&mut state.params.timeout_ms, 100..=5000)
                             .suffix(" ms")
                             .clamping(egui::SliderClamping::Always),
                     );
                     ui.label(
-                        egui::RichText::new("Augmenter pour les réseaux lents").small().weak(),
+                        egui::RichText::new(&lang.scan_delay_hint).small().weak(),
                     );
                     ui.end_row();
 
                     // ── Concurrence ───────────────────────────────────────────
-                    ui.label("Parallélisme :");
+                    ui.label(&lang.field_concurrency);
                     ui.add(
                         egui::Slider::new(&mut state.params.concurrency, 4..=256)
-                            .suffix(" connexions")
+                            .suffix(lang.suffix_connections.as_str())
                             .clamping(egui::SliderClamping::Always),
                     );
                     ui.label(
-                        egui::RichText::new("Réduire si le réseau est instable").small().weak(),
+                        egui::RichText::new(&lang.scan_concurrency_hint).small().weak(),
                     );
                     ui.end_row();
                 });
@@ -292,18 +292,19 @@ fn render_results_table(
     state: &mut NetworkScanState,
     ui: &mut Ui,
     action: &mut ScanAction,
+    lang: &Lang,
 ) {
     // Barre de filtre sur les résultats
     ui.horizontal(|ui| {
-        ui.label(format!("{} hôte(s) trouvé(s)", state.results.len()));
+        ui.label(Lang::fmt_n(&lang.scan_hosts_found, state.results.len()));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button("📋 Exporter CSV").clicked() {
+            if ui.button(&lang.scan_export_csv).clicked() {
                 export_csv(&state.results);
             }
             ui.add(
                 egui::TextEdit::singleline(&mut state.filter)
                     .desired_width(140.0)
-                    .hint_text("Filtrer…"),
+                    .hint_text(&lang.scan_filter_hint),
             );
             ui.label("🔍");
         });
@@ -321,11 +322,11 @@ fn render_results_table(
                 .show(ui, |ui| {
                     // En-têtes
                     ui.strong("IP");
-                    ui.strong("Hostname");
-                    ui.strong("Latence");
-                    ui.strong("Bannière SSH");
-                    ui.strong("Version");
-                    ui.strong("Action");
+                    ui.strong(&lang.scan_col_hostname);
+                    ui.strong(&lang.scan_col_latency);
+                    ui.strong(&lang.scan_col_banner);
+                    ui.strong(&lang.scan_col_version);
+                    ui.strong(&lang.scan_col_action);
                     ui.end_row();
 
                     // Lignes filtrées
@@ -370,8 +371,8 @@ fn render_results_table(
 
                         // Bouton de connexion directe
                         if ui
-                            .button("🔌 Connecter")
-                            .on_hover_text("Crée un profil et ouvre une session SSH")
+                            .button(&lang.dlg_connect_btn)
+                            .on_hover_text(&lang.scan_connect_hint)
                             .clicked()
                         {
                             connect_target = Some(result.clone());
@@ -389,7 +390,7 @@ fn render_results_table(
 
 /// Exporte la liste des résultats en CSV via la boîte de dialogue native.
 fn export_csv(results: &[ScanResult]) {
-    let mut csv = "IP,Hostname,Latence (ms),Bannière SSH\n".to_string();
+    let mut csv = "IP,Hostname,Latency (ms),SSH banner\n".to_string();
     for r in results {
         csv += &format!(
             "{},{},{},{}\n",

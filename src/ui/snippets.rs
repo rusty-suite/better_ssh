@@ -1,6 +1,7 @@
 /// Gestionnaire de snippets / macros de commandes.
 /// Permet de sauvegarder des commandes fréquentes avec nom, description et tags.
 /// Les snippets épinglés apparaissent en tête de liste.
+use crate::i18n::Lang;
 use crate::ui::icons as ph;
 use egui::Ui;
 use serde::{Deserialize, Serialize};
@@ -51,18 +52,18 @@ pub struct SnippetsState {
 }
 
 impl SnippetsState {
-    /// Initialise avec quelques snippets utiles par défaut.
-    pub fn new() -> Self {
+    /// Initialise avec quelques snippets utiles par défaut, nommés dans la langue active.
+    pub fn new(lang: &Lang) -> Self {
         Self {
             snippets: vec![
-                Snippet::new("Lister les fichiers",    "ls -lah"),
-                Snippet::new("Espace disque",          "df -h"),
-                Snippet::new("Mémoire disponible",     "free -h"),
-                Snippet::new("Processus (top 20)",     "ps aux --sort=-%cpu | head -20"),
-                Snippet::new("Suivre syslog",          "tail -f /var/log/syslog"),
-                Snippet::new("Ports en écoute",        "ss -tlnp"),
-                Snippet::new("Charge système",         "uptime && cat /proc/loadavg"),
-                Snippet::new("Interfaces réseau",      "ip addr show"),
+                Snippet::new(&lang.snip_default_ls,     "ls -lah"),
+                Snippet::new(&lang.snip_default_df,     "df -h"),
+                Snippet::new(&lang.snip_default_free,   "free -h"),
+                Snippet::new(&lang.snip_default_ps,     "ps aux --sort=-%cpu | head -20"),
+                Snippet::new(&lang.snip_default_syslog, "tail -f /var/log/syslog"),
+                Snippet::new(&lang.snip_default_ports,  "ss -tlnp"),
+                Snippet::new(&lang.snip_default_load,   "uptime && cat /proc/loadavg"),
+                Snippet::new(&lang.snip_default_net,    "ip addr show"),
             ],
             search: String::new(),
             editing: None,
@@ -73,16 +74,16 @@ impl SnippetsState {
 
 // ─── Rendu egui ──────────────────────────────────────────────────────────────
 
-pub fn render(state: &mut SnippetsState, ui: &mut Ui) {
+pub fn render(state: &mut SnippetsState, ui: &mut Ui, lang: &Lang) {
     // ── En-tête ───────────────────────────────────────────────────────────────
     ui.horizontal(|ui| {
-        ui.heading(format!("{} Snippets", ph::LIGHTNING));
+        ui.heading(format!("{} {}", ph::LIGHTNING, lang.shortcut_snippets));
         ui.label(
-            egui::RichText::new(format!("({} commandes)", state.snippets.len()))
+            egui::RichText::new(Lang::fmt_n(&lang.snip_count, state.snippets.len()))
                 .small().weak(),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button("+ Nouveau").clicked() {
+            if ui.button(&lang.snip_new).clicked() {
                 state.editing = Some(Snippet::new("", ""));
                 state.show_editor = true;
             }
@@ -94,7 +95,7 @@ pub fn render(state: &mut SnippetsState, ui: &mut Ui) {
     ui.horizontal(|ui| {
         ui.label(ph::MAGNIFYING_GLASS);
         ui.text_edit_singleline(&mut state.search)
-            .on_hover_text("Filtrer par nom ou commande");
+            .on_hover_text(&lang.snip_filter_hint);
     });
     ui.add_space(4.0);
 
@@ -140,13 +141,13 @@ pub fn render(state: &mut SnippetsState, ui: &mut Ui) {
                             ui.strong(&s.name);
 
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.small_button("🗑").on_hover_text("Supprimer").clicked() {
+                                if ui.small_button("🗑").on_hover_text(&lang.btn_delete).clicked() {
                                     to_delete = Some(i);
                                 }
-                                if ui.small_button("✏").on_hover_text("Modifier").clicked() {
+                                if ui.small_button("✏").on_hover_text(&lang.sidebar_edit_hint).clicked() {
                                     to_edit = Some(i);
                                 }
-                                let pin_label = if s.pinned { "📌 Désépingler" } else { "📌 Épingler" };
+                                let pin_label = if s.pinned { &lang.snip_unpin } else { &lang.snip_pin };
                                 if ui.small_button(pin_label).clicked() {
                                     to_pin = Some(i);
                                 }
@@ -175,7 +176,7 @@ pub fn render(state: &mut SnippetsState, ui: &mut Ui) {
                         }
 
                         // Bouton d'exécution.
-                        if ui.button("> Envoyer au terminal").clicked() {
+                        if ui.button(&lang.snip_send).clicked() {
                             // TODO: envoyer `s.command` vers la session SSH active
                             log::debug!("Snippet sélectionné : {}", s.command);
                         }
@@ -197,18 +198,18 @@ pub fn render(state: &mut SnippetsState, ui: &mut Ui) {
 
     // ── Fenêtre d'édition ─────────────────────────────────────────────────────
     if state.show_editor {
-        render_editor(state, ui.ctx());
+        render_editor(state, ui.ctx(), lang);
     }
 }
 
 /// Fenêtre modale de création/édition d'un snippet.
 /// Travaille sur un clone de `state.editing` pour éviter les double-borrows.
-fn render_editor(state: &mut SnippetsState, ctx: &egui::Context) {
+fn render_editor(state: &mut SnippetsState, ctx: &egui::Context, lang: &Lang) {
     let mut snippet = state.editing.clone().unwrap_or_else(|| Snippet::new("", ""));
     let mut save   = false;
     let mut cancel = false;
 
-    let title = if snippet.name.is_empty() { "Nouveau snippet" } else { "Modifier le snippet" };
+    let title = if snippet.name.is_empty() { &lang.snip_new_title } else { &lang.snip_edit_title };
 
     egui::Window::new(title)
         .default_size([420.0, 340.0])
@@ -218,27 +219,27 @@ fn render_editor(state: &mut SnippetsState, ctx: &egui::Context) {
                 .num_columns(2)
                 .spacing([8.0, 8.0])
                 .show(ui, |ui| {
-                    ui.label("Nom :");
+                    ui.label(&lang.dlg_field_name);
                     ui.text_edit_singleline(&mut snippet.name);
                     ui.end_row();
 
-                    ui.label("Commande :");
+                    ui.label(&lang.snip_command);
                     ui.add(
                         egui::TextEdit::multiline(&mut snippet.command)
                             .font(egui::TextStyle::Monospace)
                             .desired_rows(3)
-                            .hint_text("Commande shell (ex: tail -f /var/log/syslog)"),
+                            .hint_text(&lang.snip_command_hint),
                     );
                     ui.end_row();
 
-                    ui.label("Description :");
+                    ui.label(&lang.about_description);
                     ui.text_edit_singleline(&mut snippet.description);
                     ui.end_row();
 
-                    ui.label("Tags :");
+                    ui.label(&lang.dlg_field_tags);
                     let mut tags_str = snippet.tags.join(", ");
                     if ui.text_edit_singleline(&mut tags_str)
-                        .on_hover_text("Séparés par des virgules")
+                        .on_hover_text(&lang.snip_tags_hint)
                         .changed()
                     {
                         snippet.tags = tags_str
@@ -249,15 +250,15 @@ fn render_editor(state: &mut SnippetsState, ctx: &egui::Context) {
                     }
                     ui.end_row();
 
-                    ui.label("Épingler :");
-                    ui.checkbox(&mut snippet.pinned, "Afficher en tête de liste");
+                    ui.label(&lang.snip_pin_label);
+                    ui.checkbox(&mut snippet.pinned, &lang.snip_pin_check);
                     ui.end_row();
                 });
 
             ui.separator();
             ui.horizontal(|ui| {
-                if ui.button("💾 Sauvegarder").clicked() { save = true; }
-                if ui.button("Annuler").clicked()          { cancel = true; }
+                if ui.button(&lang.dlg_save_btn).clicked() { save = true; }
+                if ui.button(&lang.dlg_cancel_btn).clicked() { cancel = true; }
             });
         });
 
