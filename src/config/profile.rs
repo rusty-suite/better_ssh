@@ -25,16 +25,6 @@ impl Default for AuthMethod {
     }
 }
 
-impl std::fmt::Display for AuthMethod {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Password => write!(f, "Mot de passe"),
-            Self::PublicKey { identity_file } => write!(f, "Clé : {identity_file}"),
-            Self::Agent => write!(f, "Agent SSH"),
-        }
-    }
-}
-
 // ─── Profil de connexion ──────────────────────────────────────────────────────
 
 /// Représente une connexion SSH sauvegardée.
@@ -47,10 +37,14 @@ pub struct ConnectionProfile {
     /// Nom affiché dans la barre latérale (ex: "Serveur Web Prod").
     pub name: String,
     /// Adresse IP ou nom d'hôte DNS.
+    /// Stocké uniquement dans le vault chiffré — jamais en clair sur le disque.
+    #[serde(skip)]
     pub host: String,
     /// Port SSH (22 par défaut).
     pub port: u16,
     /// Nom d'utilisateur pour la connexion.
+    /// Stocké uniquement dans le vault chiffré — jamais en clair sur le disque.
+    #[serde(skip)]
     pub username: String,
     /// Méthode d'authentification choisie.
     pub auth_method: AuthMethod,
@@ -147,7 +141,7 @@ impl Default for TerminalConfig {
         Self {
             font_size: 13.0,
             scrollback_lines: 10_000,
-            font_preset: "Normale".into(),
+            font_preset: "normal".into(),
         }
     }
 }
@@ -203,9 +197,9 @@ impl AppConfig {
             return Ok(Self::default());
         }
         let text = std::fs::read_to_string(&path)
-            .with_context(|| format!("lecture de {}", path.display()))?;
+            .with_context(|| format!("reading {}", path.display()))?;
         let mut cfg: Self = toml::from_str(&text)
-            .with_context(|| format!("parsing de {}", path.display()))?;
+            .with_context(|| format!("parsing {}", path.display()))?;
 
         // Les profils sont dans un fichier séparé pour éviter les conflits de merge.
         let ppath = Self::profiles_path();

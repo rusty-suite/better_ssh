@@ -92,12 +92,12 @@ impl NetworkScanner {
     pub fn parse_cidr(cidr: &str) -> Result<Vec<IpAddr>> {
         let parts: Vec<&str> = cidr.split('/').collect();
         if parts.len() != 2 {
-            anyhow::bail!("CIDR invalide : {cidr} (format attendu: X.X.X.X/N)");
+            anyhow::bail!("invalid CIDR: {cidr} (expected X.X.X.X/N)");
         }
-        let base: Ipv4Addr = parts[0].parse().context("adresse IP de base invalide")?;
-        let prefix: u8 = parts[1].parse().context("préfixe invalide")?;
+        let base: Ipv4Addr = parts[0].parse().context("invalid base IP address")?;
+        let prefix: u8 = parts[1].parse().context("invalid prefix")?;
         if prefix > 32 {
-            anyhow::bail!("Préfixe trop grand : {prefix} (max 32)");
+            anyhow::bail!("prefix too large: {prefix} (max 32)");
         }
         let base_u32 = u32::from(base);
         // Calcule le masque réseau (ex: /24 → 0xFFFFFF00)
@@ -120,10 +120,10 @@ impl NetworkScanner {
         }
         let parts: Vec<&str> = range.splitn(2, '-').collect();
         if parts.len() != 2 {
-            anyhow::bail!("Format invalide : {range} (ex: 192.168.1.1-254 ou 192.168.1.0/24)");
+            anyhow::bail!("invalid range: {range} (e.g. 192.168.1.1-254 or 192.168.1.0/24)");
         }
-        let start: Ipv4Addr = parts[0].parse().context("IP de début invalide")?;
-        let last_octet: u8 = parts[1].parse().context("dernier octet de fin invalide")?;
+        let start: Ipv4Addr = parts[0].parse().context("invalid start IP")?;
+        let last_octet: u8 = parts[1].parse().context("invalid last octet")?;
         let base = u32::from(start);
         let start_last = (base & 0xff) as u8;
         let ips = (start_last..=last_octet)

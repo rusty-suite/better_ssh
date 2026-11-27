@@ -2,6 +2,8 @@
 /// Organise les panneaux egui : barre du haut, barre latérale, zone centrale,
 /// barre de statut, et fenêtres modales (préférences, snippets, scan réseau).
 pub mod file_explorer;
+pub mod icons;
+pub mod lang_window;
 pub mod network_scan;
 pub mod sidebar;
 pub mod snippets;
@@ -10,7 +12,11 @@ pub mod tab_bar;
 pub mod terminal;
 
 use crate::app::{apply_theme, setup_fonts, BetterSshApp, ScanConnectDialog};
-use crate::config::{AuthMethod, ConnectionProfile, Vault};
+use crate::config::{AuthMethod, ConnectionProfile, MasterKeyCheck, Vault};
+use crate::i18n::Lang;
+use crate::ssh::session::SftpCommand;
+use crate::ui::file_explorer::SftpRequest;
+use crate::ui::icons as ph;
 use crate::ui::network_scan::ScanAction;
 use egui::Context;
 
@@ -23,6 +29,9 @@ pub fn render(app: &mut BetterSshApp, ctx: &Context) {
     render_main_area(app, ctx);
     render_status_bar(app, ctx);
     render_modals(app, ctx);
+    if app.show_lang_window {
+        lang_window::render(app, ctx);
+    }
 }
 
 // ─── Barre supérieure ─────────────────────────────────────────────────────────
@@ -37,18 +46,37 @@ fn render_top_bar(app: &mut BetterSshApp, ctx: &Context) {
             // Barre d'onglets (une session par onglet).
             tab_bar::render(app, ui);
 
-            // Contrôles à droite : thème + préférences
+            // Contrôles à droite : thème + préférences + langue
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let label = if app.dark_mode { "☀ Clair" } else { "🌙 Sombre" };
-                if ui.button(label).on_hover_text("Basculer le thème (clair/sombre)").clicked() {
+                let theme_label = if app.dark_mode {
+                    format!("{} {}", ph::SUN, app.lang.topbar_theme_light)
+                } else {
+                    format!("{} {}", ph::MOON, app.lang.topbar_theme_dark)
+                };
+                if ui.button(theme_label)
+                    .on_hover_text(&app.lang.topbar_theme_hint)
+                    .clicked()
+                {
                     app.dark_mode = !app.dark_mode;
                     apply_theme(ctx, app.dark_mode);
                 }
-                if ui.button("⚙ Préférences").clicked() {
+                if ui.button(format!("{} {}", ph::GEAR, app.lang.topbar_prefs)).clicked() {
                     app.show_preferences = !app.show_preferences;
                 }
-                if ui.button("🔍 Scanner").on_hover_text("Scan réseau SSH (F5)").clicked() {
+                if ui.button(format!("{} {}", ph::MAGNIFYING_GLASS, app.lang.topbar_scanner))
+                    .on_hover_text(&app.lang.topbar_scanner_hint)
+                    .clicked()
+                {
                     app.show_network_scan = !app.show_network_scan;
+                }
+                let lang_hint = crate::i18n::Lang::fmt_lang(
+                    &app.lang.topbar_lang_hint, &app.lang_chosen,
+                );
+                if ui.button(ph::GLOBE)
+                    .on_hover_text(lang_hint)
+                    .clicked()
+                {
+                    app.show_lang_window = !app.show_lang_window;
                 }
             });
         });
@@ -74,7 +102,7 @@ fn render_main_area(app: &mut BetterSshApp, ctx: &Context) {
     egui::CentralPanel::default().show(ctx, |ui| {
         if app.tabs.is_empty() {
             // Pas de session ouverte → page d'accueil avec raccourcis.
-            render_welcome(ui);
+            render_welcome(app, ui);
             return;
         }
         let idx = app.active_tab;
@@ -88,22 +116,49 @@ fn render_main_area(app: &mut BetterSshApp, ctx: &Context) {
             egui::TopBottomPanel::bottom("sys_monitor")
                 .default_height(200.0)
                 .show_inside(ui, |ui| {
-                    system_monitor::render(&mut app.tabs[idx].system_monitor, ui);
+                    system_monitor::render(&mut app.tabs[idx].system_monitor, ui, &app.lang);
                 });
         }
 
         // L'explorateur SFTP s'affiche à droite en split-pane.
         if show_explorer {
+            let username    = app.tabs[idx].profile.username.clone();
+            let current_uid = app.tabs[idx].file_explorer.current_uid;
+            let mut sftp_req: Option<file_explorer::SftpRequest> = None;
             egui::SidePanel::right("file_explorer")
-                .default_width(300.0)
+                .default_width(360.0)
                 .show_inside(ui, |ui| {
-                    file_explorer::render(&mut app.tabs[idx].file_explorer, ui);
+                    sftp_req = file_explorer::render(
+                        &mut app.tabs[idx].file_explorer, ui, &app.lang, &username, current_uid,
+                    );
                 });
+            // Traitement de la requête SFTP retournée par l'explorateur.
+            if let Some(req) = sftp_req {
+                handle_sftp_request(app, idx, req);
+            }
+
+            // Fallback : premier chargement si l'explorateur est visible,
+            // la session connectée, mais aucun listage n'a encore eu lieu.
+            if app.tabs[idx].connected
+                && !app.tabs[idx].file_explorer.loaded
+                && !app.tabs[idx].file_explorer.loading
+            {
+                let path = app.tabs[idx].file_explorer.current_path.clone();
+                app.tabs[idx].file_explorer.loading = true;
+                if let Some(session) = &app.tabs[idx].session {
+                    session.send_sftp(SftpCommand::ListDir(path));
+                }
+            }
         }
 
         // Le terminal occupe le reste de la zone centrale.
-        // Si l'utilisateur a validé une saisie, on la transmet à la session.
-        if let Some(bytes) = terminal::render(&mut app.tabs[idx].terminal, ui) {
+        // Si l'utilisateur a validé une saisie, on la transmet à la session SSH.
+        let modal_open = app.sidebar.show_new_profile
+            || app.show_preferences
+            || app.show_snippets
+            || app.show_network_scan
+            || app.pending_scan_connect.is_some();
+        if let Some(bytes) = terminal::render(&mut app.tabs[idx].terminal, ui, modal_open, &app.lang) {
             if let Some(session) = &app.tabs[idx].session {
                 session.send_input(bytes);
             }
@@ -126,19 +181,19 @@ fn render_status_bar(app: &mut BetterSshApp, ctx: &Context) {
         ui.horizontal(|ui| {
             if let Some(tab) = app.tabs.get(app.active_tab) {
                 let (status, color) = if tab.connected {
-                    ("● Connecté", egui::Color32::from_rgb(80, 200, 80))
+                    (app.lang.status_connected.as_str(), egui::Color32::from_rgb(80, 200, 80))
                 } else {
-                    ("● Déconnecté", egui::Color32::from_rgb(200, 80, 80))
+                    (app.lang.status_disconnected.as_str(), egui::Color32::from_rgb(200, 80, 80))
                 };
                 ui.colored_label(color, status);
                 ui.separator();
                 ui.label(format!("{}@{}", tab.profile.username, tab.profile.host));
                 ui.separator();
-                ui.label(format!("Port {}", tab.profile.port));
+                ui.label(Lang::fmt_n(&app.lang.status_port, tab.profile.port as usize));
                 ui.separator();
                 ui.label(egui::RichText::new(tab.profile.display_name()).strong());
             } else {
-                ui.label(egui::RichText::new("Aucune session active").weak());
+                ui.label(egui::RichText::new(&app.lang.status_no_session).weak());
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(
@@ -166,11 +221,11 @@ fn render_modals(app: &mut BetterSshApp, ctx: &Context) {
     }
 
     if app.show_snippets {
-        egui::Window::new("Snippets / Macros")
+        egui::Window::new(&app.lang.snip_window_title)
             .open(&mut app.show_snippets)
             .default_size([520.0, 420.0])
             .show(ctx, |ui| {
-                snippets::render(&mut app.snippets, ui);
+                snippets::render(&mut app.snippets, ui, &app.lang);
             });
     }
 
@@ -178,11 +233,11 @@ fn render_modals(app: &mut BetterSshApp, ctx: &Context) {
     if app.show_network_scan {
         let mut open = app.show_network_scan;
         let mut action = ScanAction::None;
-        egui::Window::new("🔍 Scan réseau SSH")
+        egui::Window::new(format!("{} {}", ph::MAGNIFYING_GLASS, app.lang.scan_window_title))
             .open(&mut open)
             .default_size([780.0, 560.0])
             .show(ctx, |ui| {
-                action = network_scan::render(&mut app.network_scan, ui);
+                action = network_scan::render(&mut app.network_scan, ui, &app.lang);
             });
         app.show_network_scan = open;
 
@@ -207,7 +262,7 @@ fn render_modals(app: &mut BetterSshApp, ctx: &Context) {
                 None => ("root".to_string(), AuthMethod::Password, String::new(), None),
             };
 
-            // Tente de charger le mot de passe depuis le vault si celui-ci est déjà ouvert.
+            // Tente de charger le mot de passe et le nom d'utilisateur depuis le vault.
             let (mut password, vault_password_loaded) =
                 if let (Some(vault), Some(id)) = (&app.vault, &existing_profile_id) {
                     match vault.get_password(id) {
@@ -217,6 +272,15 @@ fn render_modals(app: &mut BetterSshApp, ctx: &Context) {
                 } else {
                     (String::new(), false)
                 };
+
+            let mut username = username;
+            if username.is_empty() || username == "root" {
+                if let (Some(vault), Some(id)) = (&app.vault, &existing_profile_id) {
+                    if let Ok(Some(u)) = vault.get_username(id) {
+                        if !u.is_empty() { username = u; }
+                    }
+                }
+            }
 
             app.pending_scan_connect = Some(ScanConnectDialog {
                 scan_result: result,
@@ -228,6 +292,7 @@ fn render_modals(app: &mut BetterSshApp, ctx: &Context) {
                 vault_password_loaded,
                 is_new: existing.is_none(),
                 existing_profile_id,
+                vault_error: None,
             });
         }
     }
@@ -236,18 +301,11 @@ fn render_modals(app: &mut BetterSshApp, ctx: &Context) {
 // ─── Écran d'accueil ──────────────────────────────────────────────────────────
 
 /// Affiché quand aucun onglet n'est ouvert. Liste les raccourcis principaux.
-fn render_welcome(ui: &mut egui::Ui) {
+fn render_welcome(app: &BetterSshApp, ui: &mut egui::Ui) {
     ui.centered_and_justified(|ui| {
         ui.vertical_centered(|ui| {
             ui.add_space(60.0);
-            ui.heading("Bienvenue dans BetterSSH");
-            ui.add_space(14.0);
-            ui.label(
-                egui::RichText::new(
-                    "Sélectionnez un profil dans la barre latérale\nou appuyez sur Ctrl+T pour créer une nouvelle connexion."
-                )
-                .weak(),
-            );
+            ui.heading(&app.lang.welcome_title);
             ui.add_space(28.0);
 
             egui::Frame::none()
@@ -258,16 +316,16 @@ fn render_welcome(ui: &mut egui::Ui) {
                         .num_columns(2)
                         .spacing([24.0, 6.0])
                         .show(ui, |ui| {
-                            shortcut(ui, "Ctrl+T",       "Nouvelle connexion");
-                            shortcut(ui, "Ctrl+W",       "Fermer l'onglet");
-                            shortcut(ui, "Ctrl+Tab",     "Onglet suivant");
-                            shortcut(ui, "F2",           "Explorateur SFTP");
-                            shortcut(ui, "F3",           "Moniteur système");
-                            shortcut(ui, "F4",           "Snippets");
-                            shortcut(ui, "F5",           "Scan réseau");
-                            shortcut(ui, "Ctrl+,",       "Préférences");
-                            shortcut(ui, "Ctrl+Scroll",  "Zoom police terminal");
-                            shortcut(ui, "Ctrl+R",       "Recherche historique");
+                            shortcut(ui, &app.lang.welcome_new_hint,  &app.lang.welcome_new);
+                            shortcut(ui, &app.lang.welcome_scan_hint, &app.lang.welcome_scan);
+                            shortcut(ui, "Ctrl+W",       &app.lang.shortcut_close_tab);
+                            shortcut(ui, "Ctrl+Tab",     &app.lang.shortcut_next_tab);
+                            shortcut(ui, "F2",           &app.lang.shortcut_sftp);
+                            shortcut(ui, "F3",           &app.lang.shortcut_monitor);
+                            shortcut(ui, "F4",           &app.lang.shortcut_snippets);
+                            shortcut(ui, "Ctrl+,",       &app.lang.topbar_prefs);
+                            shortcut(ui, "Ctrl+Scroll",  &app.lang.shortcut_zoom);
+                            shortcut(ui, "Ctrl+R",       &app.lang.shortcut_history);
                         });
                 });
         });
@@ -287,22 +345,22 @@ fn shortcut(ui: &mut egui::Ui, keys: &str, desc: &str) {
 fn render_preferences(app: &mut BetterSshApp, ctx: &Context) {
     let mut open = app.show_preferences;
 
-    egui::Window::new("⚙ Préférences")
+    egui::Window::new(format!("{} {}", ph::GEAR, app.lang.topbar_prefs))
         .open(&mut open)
         .default_size([480.0, 420.0])
         .collapsible(false)
         .show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 // ── Section Apparence ─────────────────────────────────────────
-                ui.heading("Apparence");
+                ui.heading(&app.lang.prefs_appearance);
                 ui.separator();
                 ui.horizontal(|ui| {
-                    ui.label("Thème :");
-                    if ui.selectable_label(app.dark_mode, "🌙 Sombre").clicked() {
+                    ui.label(&app.lang.prefs_theme);
+                    if ui.selectable_label(app.dark_mode, format!("{} {}", ph::MOON, app.lang.topbar_theme_dark)).clicked() {
                         app.dark_mode = true;
                         apply_theme(ctx, true);
                     }
-                    if ui.selectable_label(!app.dark_mode, "☀ Clair").clicked() {
+                    if ui.selectable_label(!app.dark_mode, format!("{} {}", ph::SUN, app.lang.topbar_theme_light)).clicked() {
                         app.dark_mode = false;
                         apply_theme(ctx, false);
                     }
@@ -310,24 +368,24 @@ fn render_preferences(app: &mut BetterSshApp, ctx: &Context) {
                 ui.add_space(10.0);
 
                 // ── Section Police du terminal ─────────────────────────────────
-                ui.heading("Police du terminal");
+                ui.heading(&app.lang.prefs_font);
                 ui.separator();
 
                 // Préréglages nommés (taille de police)
-                ui.label("Préréglage :");
+                ui.label(&app.lang.prefs_preset);
                 let current_size = app.config.terminal.font_size;
                 let current_preset = app.config.terminal.font_preset.clone();
 
                 // Grille de boutons pour les préréglages
                 ui.horizontal_wrapped(|ui| {
-                    for (label, size) in terminal::FONT_PRESETS {
+                    for (id, size) in terminal::FONT_PRESETS {
                         let selected = (current_size - size).abs() < 0.1;
-                        if ui.selectable_label(selected, *label)
+                        if ui.selectable_label(selected, app.lang.font_preset_label(id))
                             .on_hover_text(format!("{} pt", size))
                             .clicked()
                         {
                             let s = *size;
-                            app.config.terminal.font_preset = label.to_string();
+                            app.config.terminal.font_preset = id.to_string();
                             app.apply_font_size(ctx, s);
                             app.save_config();
                         }
@@ -337,7 +395,7 @@ fn render_preferences(app: &mut BetterSshApp, ctx: &Context) {
                 ui.add_space(6.0);
 
                 // Curseur de taille personnalisée
-                ui.label("Taille personnalisée :");
+                ui.label(&app.lang.prefs_custom_size);
                 let mut size = app.config.terminal.font_size;
                 let resp = ui.add(
                     egui::Slider::new(&mut size, 8.0_f32..=32.0)
@@ -346,7 +404,7 @@ fn render_preferences(app: &mut BetterSshApp, ctx: &Context) {
                         .clamping(egui::SliderClamping::Always),
                 );
                 if resp.changed() {
-                    app.config.terminal.font_preset = "Personnalisée".into();
+                    app.config.terminal.font_preset = "custom".into();
                     app.apply_font_size(ctx, size);
                     app.save_config();
                 }
@@ -358,7 +416,7 @@ fn render_preferences(app: &mut BetterSshApp, ctx: &Context) {
                     .inner_margin(egui::Margin::same(8.0))
                     .show(ui, |ui| {
                         ui.label(
-                            egui::RichText::new("user@serveur:~$ ls -lah /var/log/")
+                            egui::RichText::new("user@server:~$ ls -lah /var/log/")
                                 .font(egui::FontId::monospace(app.config.terminal.font_size))
                                 .color(egui::Color32::from_rgb(100, 220, 100)),
                         );
@@ -372,37 +430,37 @@ fn render_preferences(app: &mut BetterSshApp, ctx: &Context) {
                 ui.add_space(10.0);
 
                 // ── Section Paramètres réseau par défaut ──────────────────────
-                ui.heading("Réseau — paramètres par défaut");
+                ui.heading(&app.lang.prefs_network);
                 ui.separator();
-                ui.label("Ces valeurs pré-remplissent le scanner réseau au démarrage.");
+                ui.label(&app.lang.prefs_network_hint);
                 ui.add_space(4.0);
 
                 egui::Grid::new("net_prefs_grid")
                     .num_columns(2)
                     .spacing([12.0, 6.0])
                     .show(ui, |ui| {
-                        ui.label("Plage CIDR par défaut :");
+                        ui.label(&app.lang.prefs_default_cidr);
                         ui.text_edit_singleline(&mut app.config.network.target_cidr);
                         ui.end_row();
 
-                        ui.label("Port SSH :");
+                        ui.label(&app.lang.field_ssh_port);
                         let mut port_str = app.config.network.ssh_port.to_string();
                         if ui.text_edit_singleline(&mut port_str).changed() {
                             app.config.network.ssh_port = port_str.parse().unwrap_or(22);
                         }
                         ui.end_row();
 
-                        ui.label("Délai timeout (ms) :");
+                        ui.label(&app.lang.prefs_timeout);
                         ui.add(
                             egui::Slider::new(&mut app.config.network.timeout_ms, 100..=5000)
                                 .suffix(" ms"),
                         );
                         ui.end_row();
 
-                        ui.label("Parallélisme :");
+                        ui.label(&app.lang.field_concurrency);
                         ui.add(
                             egui::Slider::new(&mut app.config.network.concurrency, 4..=256)
-                                .suffix(" connexions"),
+                                .suffix(app.lang.suffix_connections.as_str()),
                         );
                         ui.end_row();
                     });
@@ -410,9 +468,60 @@ fn render_preferences(app: &mut BetterSshApp, ctx: &Context) {
                 ui.add_space(12.0);
 
                 // ── Bouton Sauvegarder ────────────────────────────────────────
-                if ui.button("💾 Sauvegarder les préférences").clicked() {
+                if ui.button(format!("{} {}", ph::FLOPPY_DISK, app.lang.prefs_save)).clicked() {
                     app.save_config();
                 }
+
+                ui.add_space(20.0);
+
+                // ── Section À propos ──────────────────────────────────────────
+                ui.heading(&app.lang.about_title);
+                ui.separator();
+
+                egui::Frame::none()
+                    .fill(ui.visuals().faint_bg_color)
+                    .inner_margin(egui::Margin::same(10.0))
+                    .show(ui, |ui| {
+                        egui::Grid::new("about_grid")
+                            .num_columns(2)
+                            .spacing([12.0, 6.0])
+                            .show(ui, |ui| {
+                                ui.label(&app.lang.about_app);
+                                ui.strong(crate::assets::APP_NAME);
+                                ui.end_row();
+
+                                ui.label(&app.lang.about_version);
+                                ui.label(
+                                    egui::RichText::new(
+                                        format!("v{}", crate::assets::APP_VERSION)
+                                    ).monospace(),
+                                );
+                                ui.end_row();
+
+                                ui.label(&app.lang.about_author);
+                                ui.label(crate::assets::APP_AUTHORS);
+                                ui.end_row();
+
+                                ui.label(&app.lang.about_license);
+                                ui.label(crate::assets::APP_LICENSE);
+                                ui.end_row();
+
+                                ui.label(&app.lang.about_description);
+                                ui.label(
+                                    egui::RichText::new(crate::assets::APP_DESCRIPTION).weak(),
+                                );
+                                ui.end_row();
+
+                                ui.label(&app.lang.about_repo);
+                                ui.hyperlink(crate::assets::APP_REPOSITORY);
+                                ui.end_row();
+                            });
+                    });
+
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(&app.lang.about_built_with).small().weak());
+                });
             });
         });
 
@@ -432,7 +541,7 @@ fn render_telnet_dialog(app: &mut BetterSshApp, ctx: &Context) {
     let mut do_cancel  = false;
 
     // Titre sans emoji hors-Noto (voir commentaire dans sidebar.rs).
-    egui::Window::new(">_ Connexion Telnet")
+    egui::Window::new(format!(">_ {}", app.lang.telnet_title))
         .default_size([320.0, 160.0])
         .collapsible(false)
         .resizable(false)
@@ -442,12 +551,12 @@ fn render_telnet_dialog(app: &mut BetterSshApp, ctx: &Context) {
                 .num_columns(2)
                 .spacing([8.0, 8.0])
                 .show(ui, |ui| {
-                    ui.label("Hôte :");
+                    ui.label(&app.lang.dlg_field_host);
                     ui.text_edit_singleline(&mut dlg.host)
-                        .on_hover_text("Adresse IP ou nom DNS");
+                        .on_hover_text(&app.lang.dlg_hint_host);
                     ui.end_row();
 
-                    ui.label("Port :");
+                    ui.label(&app.lang.dlg_field_port);
                     ui.add(
                         egui::TextEdit::singleline(&mut dlg.port)
                             .desired_width(80.0)
@@ -465,11 +574,11 @@ fn render_telnet_dialog(app: &mut BetterSshApp, ctx: &Context) {
                 let can_connect = !dlg.host.is_empty() && port_ok;
 
                 ui.add_enabled_ui(can_connect, |ui| {
-                    if ui.button(">_ Connecter").clicked() {
+                    if ui.button(format!(">_ {}", app.lang.btn_connect)).clicked() {
                         do_connect = true;
                     }
                 });
-                if ui.button("Annuler").clicked() {
+                if ui.button(&app.lang.dlg_cancel_btn).clicked() {
                     do_cancel = true;
                 }
             });
@@ -504,9 +613,9 @@ fn render_scan_connect_dialog(app: &mut BetterSshApp, ctx: &Context) {
     let banner   = dlg.scan_result.ssh_banner.clone().unwrap_or_else(|| "—".into());
 
     let title = if dlg.is_new {
-        format!("Nouvelle connexion — {hostname}")
+        Lang::fmt(&app.lang.scan_connect_title_new, &[("host", &hostname)])
     } else {
-        format!("Connexion — {hostname} (profil existant)")
+        Lang::fmt(&app.lang.scan_connect_title_existing, &[("host", &hostname)])
     };
 
     let mut do_connect = false;
@@ -523,19 +632,19 @@ fn render_scan_connect_dialog(app: &mut BetterSshApp, ctx: &Context) {
                 .inner_margin(egui::Margin::same(8.0))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.strong("Hôte :");
+                        ui.strong(&app.lang.dlg_field_host);
                         ui.label(&ip_str);
                         if hostname != ip_str {
                             ui.label(egui::RichText::new(format!("({hostname})")).weak());
                         }
                     });
                     ui.horizontal(|ui| {
-                        ui.strong("Bannière SSH :");
+                        ui.strong(&app.lang.field_ssh_banner);
                         ui.label(egui::RichText::new(&banner).monospace().small());
                     });
                     if !dlg.is_new {
                         ui.label(
-                            egui::RichText::new("Profil existant — identifiants pré-remplis.")
+                            egui::RichText::new(&app.lang.scan_connect_existing)
                                 .small()
                                 .color(egui::Color32::from_rgb(80, 180, 80)),
                         );
@@ -549,24 +658,24 @@ fn render_scan_connect_dialog(app: &mut BetterSshApp, ctx: &Context) {
                 .spacing([8.0, 8.0])
                 .show(ui, |ui| {
                     // ── Nom d'utilisateur ─────────────────────────────────────
-                    ui.label("Utilisateur :");
+                    ui.label(&app.lang.dlg_field_user);
                     ui.text_edit_singleline(&mut dlg.username);
                     ui.end_row();
 
                     // ── Méthode d'authentification ────────────────────────────
-                    ui.label("Authentification :");
+                    ui.label(&app.lang.dlg_field_auth);
                     egui::ComboBox::new("scan_auth_combo", "")
-                        .selected_text(dlg.auth_method.to_string())
+                        .selected_text(app.lang.auth_method(&dlg.auth_method))
                         .show_ui(ui, |ui| {
                             ui.selectable_value(
-                                &mut dlg.auth_method, AuthMethod::Password, "Mot de passe",
+                                &mut dlg.auth_method, AuthMethod::Password, &app.lang.dlg_auth_password,
                             );
                             ui.selectable_value(
-                                &mut dlg.auth_method, AuthMethod::Agent, "Agent SSH",
+                                &mut dlg.auth_method, AuthMethod::Agent, &app.lang.dlg_auth_agent,
                             );
                             if ui.selectable_label(
                                 matches!(dlg.auth_method, AuthMethod::PublicKey { .. }),
-                                "Clé privée",
+                                &app.lang.dlg_auth_key,
                             ).clicked() {
                                 dlg.auth_method = AuthMethod::PublicKey {
                                     identity_file: dlg.identity_file.clone(),
@@ -578,12 +687,12 @@ fn render_scan_connect_dialog(app: &mut BetterSshApp, ctx: &Context) {
                     // ── Champs selon la méthode ───────────────────────────────
                     match &mut dlg.auth_method {
                         AuthMethod::Password => {
-                            ui.label("Mot de passe :");
+                            ui.label(&app.lang.dlg_field_password);
                             ui.vertical(|ui| {
                                 if dlg.vault_password_loaded {
                                     // Mot de passe chargé depuis le vault → indicateur vert.
                                     ui.label(
-                                        egui::RichText::new("[OK] Chargé depuis le vault")
+                                        egui::RichText::new(&app.lang.dlg_pw_loaded)
                                             .small()
                                             .color(egui::Color32::from_rgb(80, 200, 80)),
                                     );
@@ -591,54 +700,67 @@ fn render_scan_connect_dialog(app: &mut BetterSshApp, ctx: &Context) {
                                     ui.add(
                                         egui::TextEdit::singleline(&mut dlg.password)
                                             .password(true)
-                                            .hint_text("Laisser vide pour réutiliser le vault"),
+                                            .hint_text(&app.lang.dlg_pw_hint_loaded),
                                     );
                                 } else {
                                     ui.add(
                                         egui::TextEdit::singleline(&mut dlg.password)
                                             .password(true)
-                                            .hint_text("Mot de passe SSH"),
+                                            .hint_text(&app.lang.dlg_pw_hint),
                                     );
                                 }
                             });
                             ui.end_row();
 
-                            // ── Section vault ─────────────────────────────────
-                            ui.label("Vault :");
+                            // ══════════════════════════════════════════════════
+                            // SECTION VAULT — NE JAMAIS SUPPRIMER CE BLOC
+                            // Ce champ de clé maître DOIT être présent dans TOUT
+                            // dialogue de création/connexion de session, sans exception.
+                            // ══════════════════════════════════════════════════
+                            ui.label(&app.lang.dlg_field_vault);
                             ui.vertical(|ui| {
                                 if app.vault.is_some() {
                                     ui.label(
-                                        egui::RichText::new("🔓 Vault déverrouillé")
+                                        egui::RichText::new(&app.lang.dlg_vault_unlocked)
                                             .small()
                                             .color(egui::Color32::from_rgb(80, 200, 80)),
                                     );
                                     ui.label(
-                                        egui::RichText::new("Le mot de passe sera chiffré automatiquement.")
+                                        egui::RichText::new(&app.lang.scan_vault_encrypt)
                                             .small()
                                             .weak(),
                                     );
                                 } else {
                                     ui.label(
-                                        egui::RichText::new("🔒 Vault verrouillé").small().weak(),
+                                        egui::RichText::new(&app.lang.dlg_vault_locked).small().weak(),
                                     );
-                                    ui.add(
+                                    if ui.add(
                                         egui::TextEdit::singleline(&mut dlg.vault_key_input)
                                             .password(true)
-                                            .hint_text("Clé maître du vault (laisser vide = ne pas sauvegarder)"),
-                                    );
+                                            .hint_text(&app.lang.scan_vault_key_hint),
+                                    ).changed() {
+                                        dlg.vault_error = None;
+                                    }
+                                    if let Some(err) = &dlg.vault_error.clone() {
+                                        ui.label(
+                                            egui::RichText::new(format!("{} {err}", ph::WARNING))
+                                                .color(egui::Color32::from_rgb(220, 70, 70))
+                                                .small(),
+                                        );
+                                    }
                                 }
                             });
                             ui.end_row();
                         }
                         AuthMethod::PublicKey { identity_file } => {
-                            ui.label("Fichier clé :");
+                            ui.label(&app.lang.dlg_field_keyfile);
                             ui.horizontal(|ui| {
                                 if ui.text_edit_singleline(identity_file).changed() {
                                     dlg.identity_file = identity_file.clone();
                                 }
                                 if ui.button("…").clicked() {
                                     if let Some(p) = rfd::FileDialog::new()
-                                        .set_title("Sélectionner la clé privée SSH")
+                                        .set_title(&app.lang.dlg_browse_title)
                                         .pick_file()
                                     {
                                         *identity_file = p.to_string_lossy().into_owned();
@@ -651,7 +773,7 @@ fn render_scan_connect_dialog(app: &mut BetterSshApp, ctx: &Context) {
                         AuthMethod::Agent => {
                             ui.label("");
                             ui.label(
-                                egui::RichText::new("Utilise l'agent SSH système (ssh-agent).")
+                                egui::RichText::new(&app.lang.scan_agent_hint)
                                     .small()
                                     .weak(),
                             );
@@ -673,11 +795,11 @@ fn render_scan_connect_dialog(app: &mut BetterSshApp, ctx: &Context) {
                     };
 
                 ui.add_enabled_ui(can_connect, |ui| {
-                    if ui.button("🔌 Connecter").clicked() {
+                    if ui.button(format!("{} {}", ph::PLUG, app.lang.btn_connect)).clicked() {
                         do_connect = true;
                     }
                 });
-                if ui.button("Annuler").clicked() {
+                if ui.button(&app.lang.dlg_cancel_btn).clicked() {
                     do_cancel = true;
                 }
             });
@@ -691,7 +813,14 @@ fn render_scan_connect_dialog(app: &mut BetterSshApp, ctx: &Context) {
     if do_connect {
         // ── 1. Déverrouiller ou créer le vault si une clé a été saisie ────────
         if app.vault.is_none() && !dlg.vault_key_input.is_empty() {
-            app.vault = Some(Vault::new(dlg.vault_key_input.clone()));
+            let vault = Vault::new(dlg.vault_key_input.clone());
+            if matches!(vault.master_key_ok(), Ok(MasterKeyCheck::Wrong)) {
+                dlg.vault_error = Some(app.lang.vault_wrong_password.clone());
+                app.pending_scan_connect = Some(dlg);
+                return;
+            }
+            dlg.vault_error = None;
+            app.vault = Some(vault);
         }
 
         // ── 2. Construire ou mettre à jour le profil ──────────────────────────
@@ -730,9 +859,17 @@ fn render_scan_connect_dialog(app: &mut BetterSshApp, ctx: &Context) {
         }
         app.save_config();
 
-        // ── 3. Stocker le mot de passe dans le vault si disponible ────────────
+        // ── 3. Stocker hôte, utilisateur et mot de passe dans le vault ──────────
+        if let Some(vault) = &app.vault {
+            if let Err(e) = vault.store_address(&profile_id, &profile.host) {
+                log::error!("Impossible de sauvegarder l'hôte dans le vault : {e}");
+            }
+            if let Err(e) = vault.store_username(&profile_id, &dlg.username) {
+                log::error!("Impossible de sauvegarder l'utilisateur dans le vault : {e}");
+            }
+        }
+
         let password_to_use = if !dlg.password.is_empty() {
-            // Nouveau mot de passe saisi → stocker dans le vault.
             if let Some(vault) = &app.vault {
                 if let Err(e) = vault.store_password(&profile_id, &dlg.password) {
                     log::error!("Impossible de sauvegarder dans le vault : {e}");
@@ -754,4 +891,75 @@ fn render_scan_connect_dialog(app: &mut BetterSshApp, ctx: &Context) {
 
     // Pas d'action → remet le dialogue dans l'app pour continuer l'affichage.
     app.pending_scan_connect = Some(dlg);
+}
+
+// ─── Gestion des requêtes SFTP de l'explorateur ───────────────────────────────
+
+/// Traduit une requête UI de l'explorateur en commande SFTP réelle et l'envoie
+/// à la task SFTP de l'onglet courant. Le résultat arrivera via SessionEvent.
+fn handle_sftp_request(app: &mut BetterSshApp, tab_idx: usize, req: SftpRequest) {
+    if tab_idx >= app.tabs.len() { return; }
+
+    match req {
+        SftpRequest::ListDir(path) => {
+            app.tabs[tab_idx].file_explorer.loading = true;
+            app.tabs[tab_idx].file_explorer.entries.clear();
+            if let Some(session) = &app.tabs[tab_idx].session {
+                session.send_sftp(SftpCommand::ListDir(path));
+            }
+        }
+        SftpRequest::Rename { from, to } => {
+            if let Some(session) = &app.tabs[tab_idx].session {
+                session.send_sftp(SftpCommand::Rename { from, to });
+            }
+        }
+        SftpRequest::DeletePaths(paths) => {
+            // Identifie les dossiers avant le retrait optimiste de l'affichage.
+            let dir_paths: std::collections::HashSet<String> = app.tabs[tab_idx]
+                .file_explorer.entries.iter()
+                .filter(|e| e.is_dir && paths.contains(&e.path))
+                .map(|e| e.path.clone())
+                .collect();
+            // Retrait optimiste : la liste se rafraîchira via SftpOpResult.
+            let paths_set: std::collections::HashSet<String> = paths.iter().cloned().collect();
+            app.tabs[tab_idx].file_explorer.entries
+                .retain(|e| !paths_set.contains(&e.path));
+            if let Some(session) = &app.tabs[tab_idx].session {
+                for path in paths {
+                    if dir_paths.contains(&path) {
+                        session.send_sftp(SftpCommand::DeleteDir(path));
+                    } else {
+                        session.send_sftp(SftpCommand::Delete(path));
+                    }
+                }
+            }
+        }
+        SftpRequest::MovePaths { paths, dest } => {
+            if let Some(session) = &app.tabs[tab_idx].session {
+                session.send_sftp(SftpCommand::MovePaths { paths, dest });
+            }
+        }
+        SftpRequest::Mkdir(path) => {
+            if let Some(session) = &app.tabs[tab_idx].session {
+                session.send_sftp(SftpCommand::Mkdir(path));
+            }
+        }
+        SftpRequest::CreateFile(path) => {
+            if let Some(session) = &app.tabs[tab_idx].session {
+                session.send_sftp(SftpCommand::CreateFile(path));
+            }
+        }
+        SftpRequest::Download { remote } => {
+            // Demande le chemin local via un dialogue natif.
+            if let Some(local) = rfd::FileDialog::new()
+                .set_title(&app.lang.save_as_title)
+                .set_file_name(remote.rsplit('/').next().unwrap_or("fichier"))
+                .save_file()
+            {
+                if let Some(session) = &app.tabs[tab_idx].session {
+                    session.send_sftp(SftpCommand::Download { remote, local });
+                }
+            }
+        }
+    }
 }

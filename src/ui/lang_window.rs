@@ -2,7 +2,7 @@
 /// Liste toutes les langues disponibles (embarquées + fichiers sur disque).
 use crate::app::BetterSshApp;
 use crate::app::LangRepoStatus;
-use crate::i18n;
+use crate::i18n::{self, Lang};
 use egui::Context;
 
 pub fn render(app: &mut BetterSshApp, ctx: &Context) {
@@ -250,7 +250,7 @@ fn merged_lang_rows(app: &BetterSshApp) -> Vec<LangRow> {
 fn repo_status_line(app: &BetterSshApp) -> (String, egui::Color32) {
     match &app.lang_repo_status {
         LangRepoStatus::Idle => (
-            format!("GitHub - {} language(s) repo", app.remote_lang_files.len()),
+            Lang::fmt_n(&app.lang.lang_status_repo_count, app.remote_lang_files.len()),
             egui::Color32::from_rgb(80, 180, 100),
         ),
         LangRepoStatus::Loading => (

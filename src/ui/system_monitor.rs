@@ -2,6 +2,7 @@
 /// Les métriques (CPU, RAM, disques) sont collectées via des commandes SSH
 /// standard sans nécessiter d'agent côté serveur.
 /// Les données sont affichées sous forme de graphes egui_plot en temps réel.
+use crate::i18n::Lang;
 use egui::Ui;
 use egui_plot::{Line, Plot, PlotPoints};
 
@@ -76,28 +77,30 @@ impl SystemMonitorState {
 
 // ─── Rendu egui ──────────────────────────────────────────────────────────────
 
-pub fn render(state: &mut SystemMonitorState, ui: &mut Ui) {
+pub fn render(state: &mut SystemMonitorState, ui: &mut Ui, lang: &Lang) {
     // ── En-tête avec métriques textuelles ─────────────────────────────────────
     ui.horizontal(|ui| {
-        ui.heading("📊 Moniteur système");
+        ui.heading(format!("📊 {}", lang.shortcut_monitor));
         ui.separator();
 
         // Uptime formaté en jours/heures/minutes.
         let days  = state.uptime_secs / 86_400;
         let hours = (state.uptime_secs % 86_400) / 3_600;
         let mins  = (state.uptime_secs % 3_600) / 60;
-        ui.label(format!("⏱ Uptime : {days}j {hours}h {mins}m"));
+        ui.label(Lang::fmt(&lang.mon_uptime, &[
+            ("d", &days.to_string()), ("h", &hours.to_string()), ("m", &mins.to_string()),
+        ]));
         ui.separator();
 
         // Load average (analogie avec `uptime` Linux).
         ui.label(format!(
-            "⚡ Load : {:.2} {:.2} {:.2}",
-            state.load_avg[0], state.load_avg[1], state.load_avg[2]
+            "{} {:.2} {:.2} {:.2}",
+            lang.mon_load, state.load_avg[0], state.load_avg[1], state.load_avg[2]
         ));
 
         // Sélecteur de fréquence de rafraîchissement à droite.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label("Refresh :");
+            ui.label(&lang.mon_refresh);
             egui::ComboBox::new("refresh_rate_combo", "")
                 .selected_text(format!("{}s", state.refresh_secs as u32))
                 .show_ui(ui, |ui| {
@@ -121,7 +124,7 @@ pub fn render(state: &mut SystemMonitorState, ui: &mut Ui) {
             .collect();
 
         cols[0].label(
-            egui::RichText::new(format!("CPU : {:.1}%", state.cpu_percent))
+            egui::RichText::new(format!("CPU {:.1}%", state.cpu_percent))
                 .strong()
                 .color(egui::Color32::from_rgb(70, 130, 180)),
         );
@@ -152,10 +155,11 @@ pub fn render(state: &mut SystemMonitorState, ui: &mut Ui) {
             .collect();
 
         cols[1].label(
-            egui::RichText::new(format!(
-                "RAM : {}/{} Mo ({:.1}%)",
-                state.ram_used_mb, state.ram_total_mb, ram_pct
-            ))
+            egui::RichText::new(Lang::fmt(&lang.mon_ram, &[
+                ("used", &state.ram_used_mb.to_string()),
+                ("total", &state.ram_total_mb.to_string()),
+                ("pct", &format!("{ram_pct:.1}")),
+            ]))
             .strong()
             .color(egui::Color32::from_rgb(180, 70, 130)),
         );
@@ -176,7 +180,7 @@ pub fn render(state: &mut SystemMonitorState, ui: &mut Ui) {
     // ── Utilisation des disques ───────────────────────────────────────────────
     if !state.disk_info.is_empty() {
         ui.separator();
-        ui.label(egui::RichText::new("💽 Disques").strong());
+        ui.label(egui::RichText::new(&lang.mon_disks).strong());
         for disk in &state.disk_info {
             let pct = (disk.used_gb / disk.total_gb) as f32;
             // Couleur de la barre : vert < 70 %, orange < 90 %, rouge sinon.
