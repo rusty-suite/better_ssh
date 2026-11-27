@@ -1,6 +1,6 @@
 [package]
 name = "betterssh"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["rusty-suite"]
 description = "A modern, secure SSH client with multi-tab sessions, network scanner, SFTP explorer and encrypted password vault"
@@ -59,7 +59,7 @@ winres = "0.1"
 name = "BetterSSH"
 identifier = "com.betterssh.app"
 icon = ["assets/icon.ico", "assets/icon.png"]
-version = "0.1.0"
+version = "0.2.0"
 short_description = "Modern SSH Client"
 long_description = "A modern, secure SSH client built with Rust and egui — multi-tab sessions, network scanner, SFTP explorer and encrypted password vault"
 copyright = "© 2025 rusty-suite — PolyForm Noncommercial License 1.0.0"
