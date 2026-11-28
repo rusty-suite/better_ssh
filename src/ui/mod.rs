@@ -3,7 +3,6 @@
 /// barre de statut, et fenêtres modales (préférences, snippets, scan réseau).
 pub mod file_explorer;
 pub mod icons;
-pub mod lang_window;
 pub mod network_scan;
 pub mod sidebar;
 pub mod snippets;
@@ -11,7 +10,7 @@ pub mod system_monitor;
 pub mod tab_bar;
 pub mod terminal;
 
-use crate::app::{apply_theme, setup_fonts, BetterSshApp, ScanConnectDialog};
+use crate::app::{BetterSshApp, ScanConnectDialog, VERSION};
 use crate::config::{AuthMethod, ConnectionProfile, MasterKeyCheck, Vault};
 use crate::i18n::Lang;
 use crate::ssh::session::SftpCommand;
@@ -19,68 +18,112 @@ use crate::ui::file_explorer::SftpRequest;
 use crate::ui::icons as ph;
 use crate::ui::network_scan::ScanAction;
 use egui::Context;
+use rusty_ui::{tokens as tk, ChromeAction};
 
 // ─── Rendu principal ──────────────────────────────────────────────────────────
 
 /// Rendu complet d'une frame : appelle chaque sous-panneau dans l'ordre.
+/// Ordre imposé par egui : panneaux du haut et du bas, puis latéral, puis central.
 pub fn render(app: &mut BetterSshApp, ctx: &Context) {
-    render_top_bar(app, ctx);
+    let mut action = render_header(app, ctx);
+    let a = render_status_bar(app, ctx);
+    if a != ChromeAction::None {
+        action = a;
+    }
+    render_session_bar(app, ctx);
     render_sidebar(app, ctx);
     render_main_area(app, ctx);
-    render_status_bar(app, ctx);
     render_modals(app, ctx);
-    if app.show_lang_window {
-        lang_window::render(app, ctx);
+    match action {
+        ChromeAction::Settings => app.show_preferences = !app.show_preferences,
+        ChromeAction::About => app.show_about = true,
+        ChromeAction::Language => app.show_language = true,
+        ChromeAction::Update => app.show_update = true,
+        ChromeAction::None => {}
+    }
+    render_kit_windows(app, ctx);
+    app.toasts.show(ctx);
+}
+
+/// Nom, description et version affichés dans l'en-tête et la fenêtre À propos.
+fn app_info(app: &BetterSshApp) -> rusty_ui::AppInfo {
+    rusty_ui::AppInfo {
+        name: crate::assets::APP_NAME.into(),
+        description: app.lang.app_description.clone(),
+        version: VERSION.into(),
     }
 }
 
-// ─── Barre supérieure ─────────────────────────────────────────────────────────
+/// Fenêtres communes de la charte : Langue, À propos, Mise à jour.
+fn render_kit_windows(app: &mut BetterSshApp, ctx: &Context) {
+    let kit = app.kit_lang.clone();
+    let tr = |k: &str| kit.t(k);
+    let languages: Vec<(String, String)> = rusty_core::lang::STEMS
+        .iter()
+        .map(|s| (s.to_string(), rusty_core::lang::language_name(crate::i18n::PACKS, s)))
+        .collect();
+    let folder = app.work_dir.join("lang").display().to_string();
+    if let Some(stem) = rusty_ui::language_window(ctx, &mut app.show_language, &tr, &kit.stem, &languages, &folder) {
+        app.settings.common.language = stem;
+        app.save_settings();
+        app.reload_language(ctx);
+    }
+    let info = app_info(app);
+    rusty_ui::about_window(
+        ctx,
+        &mut app.show_about,
+        &tr,
+        &info,
+        crate::assets::APP_LICENSE,
+        crate::assets::APP_REPOSITORY,
+        crate::assets::APP_AUTHORS,
+    );
+    if let Some(version) = app.update.as_ref().map(|r| r.version.clone()) {
+        let installing = app.install_rx.is_some();
+        let choice = rusty_ui::update_window(ctx, &mut app.show_update, &tr, &version, installing);
+        if choice == rusty_ui::UpdateChoice::Install && !installing {
+            app.start_install();
+        }
+    }
+}
 
-/// Barre de titre avec nom de l'app, onglets de session et boutons globaux.
-fn render_top_bar(app: &mut BetterSshApp, ctx: &Context) {
-    egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
-        ui.horizontal(|ui| {
-            ui.heading(crate::assets::APP_NAME);
-            ui.separator();
+// ─── En-tête et barre des sessions ────────────────────────────────────────────
 
-            // Barre d'onglets (une session par onglet).
-            tab_bar::render(app, ui);
+/// En-tête de la charte : logo, nom, description, version, Langue et Paramètres.
+fn render_header(app: &mut BetterSshApp, ctx: &Context) -> ChromeAction {
+    let info = app_info(app);
+    let code = app.kit_lang.code();
+    rusty_ui::app_header(ctx, &mut app.logo, &info, &code)
+}
 
-            // Contrôles à droite : thème + préférences + langue
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let theme_label = if app.dark_mode {
-                    format!("{} {}", ph::SUN, app.lang.topbar_theme_light)
-                } else {
-                    format!("{} {}", ph::MOON, app.lang.topbar_theme_dark)
-                };
-                if ui.button(theme_label)
-                    .on_hover_text(&app.lang.topbar_theme_hint)
-                    .clicked()
-                {
-                    app.dark_mode = !app.dark_mode;
-                    apply_theme(ctx, app.dark_mode);
-                }
-                if ui.button(format!("{} {}", ph::GEAR, app.lang.topbar_prefs)).clicked() {
-                    app.show_preferences = !app.show_preferences;
-                }
-                if ui.button(format!("{} {}", ph::MAGNIFYING_GLASS, app.lang.topbar_scanner))
-                    .on_hover_text(&app.lang.topbar_scanner_hint)
-                    .clicked()
-                {
-                    app.show_network_scan = !app.show_network_scan;
-                }
-                let lang_hint = crate::i18n::Lang::fmt_lang(
-                    &app.lang.topbar_lang_hint, &app.lang_chosen,
-                );
-                if ui.button(ph::GLOBE)
-                    .on_hover_text(lang_hint)
-                    .clicked()
-                {
-                    app.show_lang_window = !app.show_lang_window;
-                }
+/// Barre des sessions : onglets à gauche, outils (scan réseau, snippets, À propos)
+/// à droite.
+fn render_session_bar(app: &mut BetterSshApp, ctx: &Context) {
+    let panel = egui::TopBottomPanel::top("session_bar")
+        .frame(
+            egui::Frame::new()
+                .fill(tk::BG_PANEL)
+                .stroke(egui::Stroke::new(1.0, tk::BORDER))
+                .inner_margin(egui::Margin::symmetric(tk::SPACE_4 as i8, tk::SPACE_1 as i8)),
+        )
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                tab_bar::render(app, ui);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let about = rusty_ui::texts(ui.ctx()).about.clone();
+                    if rusty_ui::icon_button(ui, ph::INFO, &about).clicked() {
+                        app.show_about = true;
+                    }
+                    if rusty_ui::icon_button(ui, ph::CODE, &app.lang.snip_window_title).clicked() {
+                        app.show_snippets = !app.show_snippets;
+                    }
+                    if rusty_ui::icon_button(ui, ph::MAGNIFYING_GLASS, &app.lang.topbar_scanner_hint).clicked() {
+                        app.show_network_scan = !app.show_network_scan;
+                    }
+                });
             });
         });
-    });
+    rusty_ui::keyboard::register_rect(ctx, rusty_ui::Zone::Toolbar, panel.response.rect);
 }
 
 // ─── Barre latérale ───────────────────────────────────────────────────────────
@@ -175,33 +218,46 @@ fn render_main_area(app: &mut BetterSshApp, ctx: &Context) {
 
 // ─── Barre de statut ──────────────────────────────────────────────────────────
 
-/// Barre inférieure : statut de connexion, utilisateur@hôte, version.
-fn render_status_bar(app: &mut BetterSshApp, ctx: &Context) {
-    egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
-        ui.horizontal(|ui| {
-            if let Some(tab) = app.tabs.get(app.active_tab) {
-                let (status, color) = if tab.connected {
-                    (app.lang.status_connected.as_str(), egui::Color32::from_rgb(80, 200, 80))
+/// Barre d'état de la charte (réseau, langues, mise à jour, version) ; l'état de la
+/// session active (connexion, utilisateur@hôte, port) est affiché juste au-dessus.
+fn render_status_bar(app: &mut BetterSshApp, ctx: &Context) -> ChromeAction {
+    let languages = app
+        .kit_lang
+        .tf("kit.languages_count", &[("count", &rusty_core::lang::STEMS.len().to_string())]);
+    let update = app.update.as_ref().map(|r| r.version.clone());
+    let action = rusty_ui::status_bar(
+        ctx,
+        &rusty_ui::StatusInfo { online: app.online, languages: &languages, update: update.as_deref(), version: VERSION },
+    );
+    egui::TopBottomPanel::bottom("session_status")
+        .frame(
+            egui::Frame::new()
+                .fill(tk::BG_PANEL)
+                .stroke(egui::Stroke::new(1.0, tk::BORDER))
+                .inner_margin(egui::Margin::symmetric(tk::SPACE_4 as i8, 2)),
+        )
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                let caption = |s: &str| rusty_ui::Text::Caption.rich(s);
+                if let Some(tab) = app.tabs.get(app.active_tab) {
+                    let (status, color) = if tab.connected {
+                        (app.lang.status_connected.as_str(), tk::SUCCESS)
+                    } else {
+                        (app.lang.status_disconnected.as_str(), tk::DANGER)
+                    };
+                    ui.label(caption(status).color(color));
+                    ui.separator();
+                    ui.label(caption(&format!("{}@{}", tab.profile.username, tab.profile.host)).color(tk::TEXT_SECONDARY));
+                    ui.separator();
+                    ui.label(caption(&Lang::fmt_n(&app.lang.status_port, tab.profile.port as usize)).color(tk::TEXT_SECONDARY));
+                    ui.separator();
+                    ui.label(caption(&tab.profile.display_name()).color(tk::TEXT_PRIMARY));
                 } else {
-                    (app.lang.status_disconnected.as_str(), egui::Color32::from_rgb(200, 80, 80))
-                };
-                ui.colored_label(color, status);
-                ui.separator();
-                ui.label(format!("{}@{}", tab.profile.username, tab.profile.host));
-                ui.separator();
-                ui.label(Lang::fmt_n(&app.lang.status_port, tab.profile.port as usize));
-                ui.separator();
-                ui.label(egui::RichText::new(tab.profile.display_name()).strong());
-            } else {
-                ui.label(egui::RichText::new(&app.lang.status_no_session).weak());
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    egui::RichText::new(format!("v{}", crate::assets::APP_VERSION)).small().weak(),
-                );
+                    ui.label(caption(&app.lang.status_no_session).color(tk::TEXT_MUTED));
+                }
             });
         });
-    });
+    action
 }
 
 // ─── Fenêtres modales ─────────────────────────────────────────────────────────
@@ -233,7 +289,7 @@ fn render_modals(app: &mut BetterSshApp, ctx: &Context) {
     if app.show_network_scan {
         let mut open = app.show_network_scan;
         let mut action = ScanAction::None;
-        egui::Window::new(format!("{} {}", ph::MAGNIFYING_GLASS, app.lang.scan_window_title))
+        egui::Window::new(&app.lang.scan_window_title)
             .open(&mut open)
             .default_size([780.0, 560.0])
             .show(ctx, |ui| {
@@ -263,7 +319,7 @@ fn render_modals(app: &mut BetterSshApp, ctx: &Context) {
             };
 
             // Tente de charger le mot de passe et le nom d'utilisateur depuis le vault.
-            let (mut password, vault_password_loaded) =
+            let (password, vault_password_loaded) =
                 if let (Some(vault), Some(id)) = (&app.vault, &existing_profile_id) {
                     match vault.get_password(id) {
                         Ok(Some(pw)) => (pw, true),
@@ -308,9 +364,9 @@ fn render_welcome(app: &BetterSshApp, ui: &mut egui::Ui) {
             ui.heading(&app.lang.welcome_title);
             ui.add_space(28.0);
 
-            egui::Frame::none()
+            egui::Frame::new()
                 .stroke(egui::Stroke::new(1.0, egui::Color32::DARK_GRAY))
-                .inner_margin(egui::Margin::same(12.0))
+                .inner_margin(egui::Margin::same(12))
                 .show(ui, |ui| {
                     egui::Grid::new("shortcuts_grid")
                         .num_columns(2)
@@ -341,32 +397,17 @@ fn shortcut(ui: &mut egui::Ui, keys: &str, desc: &str) {
 
 // ─── Fenêtre de préférences ───────────────────────────────────────────────────
 
-/// Fenêtre de préférences avec sections : apparence, police terminal, réseau.
+/// Fenêtre de préférences : police du terminal, réseau (À propos : fenêtre du kit).
 fn render_preferences(app: &mut BetterSshApp, ctx: &Context) {
     let mut open = app.show_preferences;
 
-    egui::Window::new(format!("{} {}", ph::GEAR, app.lang.topbar_prefs))
+    egui::Window::new(&app.lang.topbar_prefs)
         .open(&mut open)
-        .default_size([480.0, 420.0])
+        // Taille fixe : la fenêtre reste dans la fenêtre principale, le contenu défile.
+        .fixed_size([560.0, (ctx.screen_rect().height() - 220.0).clamp(200.0, 460.0)])
         .collapsible(false)
         .show(ctx, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                // ── Section Apparence ─────────────────────────────────────────
-                ui.heading(&app.lang.prefs_appearance);
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.label(&app.lang.prefs_theme);
-                    if ui.selectable_label(app.dark_mode, format!("{} {}", ph::MOON, app.lang.topbar_theme_dark)).clicked() {
-                        app.dark_mode = true;
-                        apply_theme(ctx, true);
-                    }
-                    if ui.selectable_label(!app.dark_mode, format!("{} {}", ph::SUN, app.lang.topbar_theme_light)).clicked() {
-                        app.dark_mode = false;
-                        apply_theme(ctx, false);
-                    }
-                });
-                ui.add_space(10.0);
-
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 // ── Section Police du terminal ─────────────────────────────────
                 ui.heading(&app.lang.prefs_font);
                 ui.separator();
@@ -374,7 +415,7 @@ fn render_preferences(app: &mut BetterSshApp, ctx: &Context) {
                 // Préréglages nommés (taille de police)
                 ui.label(&app.lang.prefs_preset);
                 let current_size = app.config.terminal.font_size;
-                let current_preset = app.config.terminal.font_preset.clone();
+                let _current_preset = app.config.terminal.font_preset.clone();
 
                 // Grille de boutons pour les préréglages
                 ui.horizontal_wrapped(|ui| {
@@ -411,9 +452,9 @@ fn render_preferences(app: &mut BetterSshApp, ctx: &Context) {
 
                 // Aperçu en temps réel de la police
                 ui.add_space(4.0);
-                egui::Frame::none()
+                egui::Frame::new()
                     .fill(egui::Color32::from_rgb(20, 20, 30))
-                    .inner_margin(egui::Margin::same(8.0))
+                    .inner_margin(egui::Margin::same(8))
                     .show(ui, |ui| {
                         ui.label(
                             egui::RichText::new("user@server:~$ ls -lah /var/log/")
@@ -468,60 +509,10 @@ fn render_preferences(app: &mut BetterSshApp, ctx: &Context) {
                 ui.add_space(12.0);
 
                 // ── Bouton Sauvegarder ────────────────────────────────────────
-                if ui.button(format!("{} {}", ph::FLOPPY_DISK, app.lang.prefs_save)).clicked() {
+                if ui.button(ph::with_text(ph::FLOPPY_DISK, &app.lang.prefs_save)).clicked() {
                     app.save_config();
                 }
 
-                ui.add_space(20.0);
-
-                // ── Section À propos ──────────────────────────────────────────
-                ui.heading(&app.lang.about_title);
-                ui.separator();
-
-                egui::Frame::none()
-                    .fill(ui.visuals().faint_bg_color)
-                    .inner_margin(egui::Margin::same(10.0))
-                    .show(ui, |ui| {
-                        egui::Grid::new("about_grid")
-                            .num_columns(2)
-                            .spacing([12.0, 6.0])
-                            .show(ui, |ui| {
-                                ui.label(&app.lang.about_app);
-                                ui.strong(crate::assets::APP_NAME);
-                                ui.end_row();
-
-                                ui.label(&app.lang.about_version);
-                                ui.label(
-                                    egui::RichText::new(
-                                        format!("v{}", crate::assets::APP_VERSION)
-                                    ).monospace(),
-                                );
-                                ui.end_row();
-
-                                ui.label(&app.lang.about_author);
-                                ui.label(crate::assets::APP_AUTHORS);
-                                ui.end_row();
-
-                                ui.label(&app.lang.about_license);
-                                ui.label(crate::assets::APP_LICENSE);
-                                ui.end_row();
-
-                                ui.label(&app.lang.about_description);
-                                ui.label(
-                                    egui::RichText::new(crate::assets::APP_DESCRIPTION).weak(),
-                                );
-                                ui.end_row();
-
-                                ui.label(&app.lang.about_repo);
-                                ui.hyperlink(crate::assets::APP_REPOSITORY);
-                                ui.end_row();
-                            });
-                    });
-
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(&app.lang.about_built_with).small().weak());
-                });
             });
         });
 
@@ -610,7 +601,7 @@ fn render_scan_connect_dialog(app: &mut BetterSshApp, ctx: &Context) {
 
     let ip_str   = dlg.scan_result.ip.to_string();
     let hostname = dlg.scan_result.hostname.clone().unwrap_or_else(|| ip_str.clone());
-    let banner   = dlg.scan_result.ssh_banner.clone().unwrap_or_else(|| "—".into());
+    let banner   = dlg.scan_result.ssh_banner.clone().unwrap_or_else(|| "-".into());
 
     let title = if dlg.is_new {
         Lang::fmt(&app.lang.scan_connect_title_new, &[("host", &hostname)])
@@ -627,9 +618,9 @@ fn render_scan_connect_dialog(app: &mut BetterSshApp, ctx: &Context) {
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
             // ── Informations de l'hôte ────────────────────────────────────────
-            egui::Frame::none()
+            egui::Frame::new()
                 .fill(ui.visuals().faint_bg_color)
-                .inner_margin(egui::Margin::same(8.0))
+                .inner_margin(egui::Margin::same(8))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.strong(&app.lang.dlg_field_host);
@@ -743,9 +734,7 @@ fn render_scan_connect_dialog(app: &mut BetterSshApp, ctx: &Context) {
                                     }
                                     if let Some(err) = &dlg.vault_error.clone() {
                                         ui.label(
-                                            egui::RichText::new(format!("{} {err}", ph::WARNING))
-                                                .color(egui::Color32::from_rgb(220, 70, 70))
-                                                .small(),
+                                            ph::colored(ph::WARNING, err, 12.0, rusty_ui::tokens::DANGER),
                                         );
                                     }
                                 }
@@ -795,7 +784,7 @@ fn render_scan_connect_dialog(app: &mut BetterSshApp, ctx: &Context) {
                     };
 
                 ui.add_enabled_ui(can_connect, |ui| {
-                    if ui.button(format!("{} {}", ph::PLUG, app.lang.btn_connect)).clicked() {
+                    if ui.button(ph::with_text(ph::PLUG, &app.lang.btn_connect)).clicked() {
                         do_connect = true;
                     }
                 });

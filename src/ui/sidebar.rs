@@ -49,7 +49,7 @@ pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
 
     // ── Barre de recherche ────────────────────────────────────────────────────
     ui.horizontal(|ui| {
-        ui.label(ph::MAGNIFYING_GLASS);
+        ui.label(ph::rich(ph::MAGNIFYING_GLASS, ph::SIZE));
         ui.text_edit_singleline(&mut app.sidebar.search)
             .on_hover_text(&app.lang.sidebar_search_hint);
     });
@@ -93,7 +93,7 @@ pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
             let vault_locked = profile.host.is_empty() || profile.username.is_empty();
             // Nom de session (toujours visible).
             let session_name = if profile.name.is_empty() {
-                if vault_locked { format!("{} {}", ph::LOCK, app.lang.sidebar_no_name) }
+                if vault_locked { app.lang.sidebar_no_name.clone() }
                 else { profile.host.clone() }
             } else {
                 profile.name.clone()
@@ -111,30 +111,33 @@ pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
             };
             let tags = profile.tags.clone();
 
-            egui::Frame::none()
-                .inner_margin(egui::Margin::symmetric(4.0, 2.0))
+            egui::Frame::new()
+                .inner_margin(egui::Margin::symmetric(4, 2))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
                             let resp = ui.selectable_label(
                                 is_active,
-                                format!("{indicator} {session_name}"),
+                                if vault_locked && profile.name.is_empty() {
+                                    ph::with_text(ph::LOCK, &format!("{indicator} {session_name}"))
+                                } else {
+                                    format!("{indicator} {session_name}").into()
+                                },
                             );
                             if resp.double_clicked() { to_open = Some(i); }
                             // Menu contextuel (clic droit) sur la ligne du profil.
                             resp.context_menu(|ui| {
-                                if ui.button(format!("{} {}", ph::PLUG, app.lang.btn_connect)).clicked() {
+                                if ui.button(ph::with_text(ph::PLUG, &app.lang.btn_connect)).clicked() {
                                     to_connect_direct = Some(i);
                                     ui.close_menu();
                                 }
                                 ui.separator();
-                                if ui.button(format!("{} {}", ph::PENCIL, app.lang.sidebar_edit_hint)).clicked() {
+                                if ui.button(ph::with_text(ph::PENCIL, &app.lang.sidebar_edit_hint)).clicked() {
                                     to_edit = Some(i);
                                     ui.close_menu();
                                 }
                                 if ui.button(
-                                    egui::RichText::new(format!("{} {}", ph::TRASH, app.lang.btn_delete))
-                                        .color(egui::Color32::from_rgb(220, 70, 70))
+                                    ph::colored(ph::TRASH, &app.lang.btn_delete, 14.0, egui::Color32::from_rgb(220, 70, 70))
                                 ).clicked() {
                                     to_delete = Some(i);
                                     ui.close_menu();
@@ -154,11 +157,11 @@ pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.add(egui::Button::new(
-                                egui::RichText::new(ph::TRASH).color(egui::Color32::from_rgb(220, 70, 70))
+                                ph::rich(ph::TRASH, ph::SIZE).color(egui::Color32::from_rgb(220, 70, 70))
                             )).on_hover_text(&app.lang.sidebar_delete_hint).clicked() {
                                 to_delete = Some(i);
                             }
-                            if ui.small_button(ph::PENCIL).on_hover_text(&app.lang.sidebar_edit_hint).clicked() {
+                            if ui.small_button(ph::rich(ph::PENCIL, 14.0)).on_hover_text(&app.lang.sidebar_edit_hint).clicked() {
                                 to_edit = Some(i);
                             }
                         });
@@ -353,7 +356,7 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                 // ── Vue réduite : vault verrouillé ─────────────────────────────
                 ui.add_space(8.0);
                 ui.vertical_centered(|ui| {
-                    ui.label(egui::RichText::new(ph::LOCK).size(32.0));
+                    ui.label(ph::rich(ph::LOCK, 32.0));
                     ui.add_space(4.0);
                     ui.label(egui::RichText::new(&app.lang.dlg_vault_screen_title).strong());
                     ui.label(egui::RichText::new(&app.lang.dlg_vault_screen_subtitle).small().weak());
@@ -380,9 +383,7 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                 });
                 if let Some(err) = &app.sidebar.vault_error.clone() {
                     ui.label(
-                        egui::RichText::new(format!("{} {err}", ph::WARNING))
-                            .color(egui::Color32::from_rgb(220, 70, 70))
-                            .small(),
+                        ph::colored(ph::WARNING, err, 12.0, rusty_ui::tokens::DANGER),
                     );
                 }
                 ui.add_space(8.0);
@@ -393,6 +394,9 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                 });
             } else {
                 // ── Vue complète : vault déverrouillé ou nouveau profil ────────
+                // Le formulaire défile pour garder les boutons visibles sur un petit écran.
+                let form_h = (ctx.screen_rect().height() - 220.0).max(160.0);
+                egui::ScrollArea::vertical().max_height(form_h).show(ui, |ui| {
                 egui::Grid::new("profile_grid")
                     .num_columns(2)
                     .spacing([8.0, 8.0])
@@ -416,9 +420,7 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                             if enter_in(&resp, ui) { focus_next = true; }
                             if profile.host.is_empty() {
                                 ui.label(
-                                    egui::RichText::new(format!("{} {}", ph::WARNING, app.lang.sidebar_missing_host))
-                                        .small()
-                                        .color(egui::Color32::from_rgb(240, 160, 40)),
+                                    ph::colored(ph::WARNING, &app.lang.sidebar_missing_host, 12.0, egui::Color32::from_rgb(240, 160, 40)),
                                 );
                             }
                         });
@@ -485,11 +487,7 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                             ui.vertical(|ui| {
                                 if app.sidebar.vault_password_loaded {
                                     ui.label(
-                                        egui::RichText::new(
-                                            format!("{} {}", ph::CHECK, app.lang.dlg_pw_loaded)
-                                        )
-                                        .small()
-                                        .color(egui::Color32::from_rgb(80, 200, 80)),
+                                        ph::colored(ph::CHECK, &app.lang.dlg_pw_loaded, 12.0, egui::Color32::from_rgb(80, 200, 80)),
                                     );
                                 }
                                 let pw_hint = if app.sidebar.vault_password_loaded {
@@ -519,11 +517,7 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                         ui.vertical(|ui| {
                             if app.vault.is_some() {
                                 ui.label(
-                                    egui::RichText::new(
-                                        format!("{} {}", ph::LOCK_OPEN, app.lang.dlg_vault_unlocked)
-                                    )
-                                    .small()
-                                    .color(egui::Color32::from_rgb(80, 200, 80)),
+                                    ph::colored(ph::LOCK_OPEN, &app.lang.dlg_vault_unlocked, 12.0, egui::Color32::from_rgb(80, 200, 80)),
                                 );
                                 ui.label(
                                     egui::RichText::new(&app.lang.dlg_vault_encrypt)
@@ -532,11 +526,7 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                                 );
                             } else {
                                 ui.label(
-                                    egui::RichText::new(
-                                        format!("{} {}", ph::LOCK, app.lang.dlg_vault_locked)
-                                    )
-                                    .small()
-                                    .weak(),
+                                    ph::colored(ph::LOCK, &app.lang.dlg_vault_locked, 12.0, rusty_ui::tokens::TEXT_MUTED),
                                 );
                                 ui.label(
                                     egui::RichText::new(&app.lang.dlg_vault_required)
@@ -562,9 +552,7 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                                     }
                                     if let Some(err) = &app.sidebar.vault_error.clone() {
                                         ui.label(
-                                            egui::RichText::new(format!("{} {err}", ph::WARNING))
-                                                .color(egui::Color32::from_rgb(220, 70, 70))
-                                                .small(),
+                                            ph::colored(ph::WARNING, err, 12.0, rusty_ui::tokens::DANGER),
                                         );
                                     }
                                 });
@@ -619,6 +607,7 @@ fn render_profile_dialog(app: &mut BetterSshApp, ctx: &egui::Context) {
                         );
                         ui.end_row();
                     });
+                });
 
                 ui.add_space(12.0);
                 ui.separator();

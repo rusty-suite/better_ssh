@@ -2,7 +2,7 @@
 /// `BetterSshApp` contient tout l'état global : onglets ouverts, sidebar,
 /// panneau de scan réseau, préférences, etc.
 use crate::config::{AppConfig, AuthMethod, ConnectionProfile, Vault};
-use crate::i18n::{Lang, LangFile};
+use crate::i18n::Lang;
 use crate::network::scanner::ScanResult;
 use crate::network::TelnetSession;
 use crate::ssh::session::{SessionCommand, SessionEvent, SftpCommand, SftpOp, SshSession};
@@ -15,6 +15,29 @@ use crate::ui::{
     terminal::TerminalState,
 };
 use egui::{Context, FontId, TextStyle};
+use rusty_core::settings::CommonSettings;
+use rusty_core::update::{self, Release};
+use rusty_ui::rusty_logo::{Logo, LogoAnim};
+use rusty_ui::Tone;
+use std::sync::mpsc::{self, Receiver};
+
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Identifiant de l'application (dossier portable, journal, mises à jour, dépôt).
+pub const APP_ID: &str = "better_ssh";
+/// Nom des fichiers publiés (`betterssh.exe`, `betterssh-linux-x86_64`).
+pub const ASSET_BASE: &str = "betterssh";
+
+/// Agent HTTP générique (jamais d'information personnelle).
+pub fn user_agent() -> String {
+    format!("{APP_ID}/{VERSION}")
+}
+
+/// Réglages persistants communs (langue, mises à jour).
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct Settings {
+    #[serde(default)]
+    pub common: CommonSettings,
+}
 
 // ─── Session unifiée (SSH ou Telnet) ─────────────────────────────────────────
 
@@ -60,16 +83,6 @@ impl AnySession {
 pub struct TelnetDialog {
     pub host: String,
     pub port: String,
-}
-
-#[derive(Clone, Debug)]
-pub enum LangRepoStatus {
-    Idle,
-    Loading,
-    Offline,
-    Error(String),
-    Downloading(String),
-    Installed(String),
 }
 
 // ─── Dialogue de connexion depuis le scan réseau ──────────────────────────────
@@ -163,8 +176,6 @@ pub struct BetterSshApp {
     pub show_network_scan: bool,
     /// true = fenêtre préférences visible.
     pub show_preferences: bool,
-    /// true = thème sombre actif.
-    pub dark_mode: bool,
     /// Handle du runtime tokio partagé pour lancer des tâches async.
     pub tokio_rt: tokio::runtime::Handle,
     /// Vault de mots de passe déverrouillé pour cette session (None = verrouillé).
@@ -177,42 +188,41 @@ pub struct BetterSshApp {
     pub lang: Lang,
     /// Répertoire de travail (config, vault, lang…).
     pub work_dir: std::path::PathBuf,
-    /// Stem de la langue active (ex : `"CH_fr"`).
-    pub lang_chosen: String,
-    /// Liste des langues disponibles (embarquées + sur disque).
-    pub lang_files: Vec<LangFile>,
-    /// Liste des fichiers de langue présents localement sur disque.
-    pub local_lang_files: Vec<LangFile>,
-    /// Liste des langues trouvées sur GitHub.
-    pub remote_lang_files: Vec<LangFile>,
-    /// true = fenêtre de sélection de langue visible.
-    pub show_lang_window: bool,
-    /// Canal de réception d'un téléchargement de langue en arrière-plan.
-    pub lang_download_rx: Option<crossbeam_channel::Receiver<anyhow::Result<(String, String)>>>,
-    /// Canal de réception de l'inventaire GitHub.
-    pub lang_remote_rx: Option<crossbeam_channel::Receiver<anyhow::Result<Vec<LangFile>>>>,
-    /// État réseau / dépôt de la fenêtre de langue.
-    pub lang_repo_status: LangRepoStatus,
+    /// Langue complète du kit (textes communs `[kit]`, stem, code du bouton Langue).
+    pub kit_lang: rusty_core::Lang,
+    pub settings: Settings,
+    pub logo: Logo,
+    pub toasts: rusty_ui::Toasts,
+    pub zones: rusty_ui::Zones,
+    pub show_language: bool,
+    pub show_about: bool,
+    pub show_update: bool,
+    pub online: Option<bool>,
+    pub net_rx: Option<Receiver<bool>>,
+    pub lang_rx: Option<Receiver<Result<usize, String>>>,
+    pub update: Option<Release>,
+    pub update_rx: Option<Receiver<Result<Option<Release>, String>>>,
+    pub install_rx: Option<Receiver<Result<(), String>>>,
+    pub args_rx: Receiver<Vec<String>>,
 }
 
 impl BetterSshApp {
     /// Initialise l'application : détection du thème OS, chargement config, polices.
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let dark_mode = dark_light::detect() == dark_light::Mode::Dark;
+    pub fn new(cc: &eframe::CreationContext<'_>, settings: Settings, args_rx: Receiver<Vec<String>>, rolled_back: Option<String>) -> Self {
         let config = AppConfig::load().unwrap_or_default();
 
-        // Applique la police et la taille sauvegardées.
+        // Thème et polices de la charte, taille de police du terminal sauvegardée.
         setup_fonts(&cc.egui_ctx, config.terminal.font_size);
-        apply_theme(&cc.egui_ctx, dark_mode);
 
         let rt = tokio::runtime::Handle::current();
 
-        let work_dir = crate::i18n::detect_work_dir();
-        let (lang, lang_chosen) = crate::i18n::load_lang(&work_dir);
-        let lang_files = crate::i18n::list_lang_files(&work_dir);
-        let local_lang_files = crate::i18n::list_local_lang_files(&work_dir);
+        let work_dir = AppConfig::config_dir();
+        let (lang, kit_lang) = crate::i18n::load_lang(&work_dir, &settings.common.language);
+        rusty_ui::set_texts(&cc.egui_ctx, rusty_ui::KitTexts::from_lookup(|k| kit_lang.t(k)));
+        let mut logo = Logo::new(LogoAnim::Scan);
+        logo.play_launch(0.0);
 
-        Self {
+        let mut app = Self {
             sidebar: SidebarState::new(config.profiles.clone()),
             config,
             tabs: Vec::new(),
@@ -223,22 +233,33 @@ impl BetterSshApp {
             show_snippets: false,
             show_network_scan: false,
             show_preferences: false,
-            dark_mode,
             tokio_rt: rt,
             vault: None,
             pending_scan_connect: None,
             telnet_dialog: None,
             lang,
             work_dir,
-            lang_chosen,
-            lang_files,
-            local_lang_files,
-            remote_lang_files: Vec::new(),
-            show_lang_window: false,
-            lang_download_rx: None,
-            lang_remote_rx: None,
-            lang_repo_status: LangRepoStatus::Idle,
+            kit_lang,
+            settings,
+            logo,
+            toasts: rusty_ui::Toasts::default(),
+            zones: rusty_ui::Zones::default(),
+            show_language: false,
+            show_about: false,
+            show_update: false,
+            online: None,
+            net_rx: Some(rusty_core::net::check_in_background(user_agent())),
+            lang_rx: None,
+            update: None,
+            update_rx: None,
+            install_rx: None,
+            args_rx,
+        };
+        if let Some(v) = rolled_back {
+            let text = app.kit_lang.tf("kit.update_restored_text", &[("version", &v)]);
+            app.toasts.push(Tone::Warning, app.kit_lang.t("kit.update_restored"), text);
         }
+        app
     }
 
     /// Ouvre un nouvel onglet pour le profil donné, démarre la session SSH et le rend actif.
@@ -343,9 +364,9 @@ impl eframe::App for BetterSshApp {
     /// Appelée à chaque frame par eframe (~60 fps). C'est ici que tout le rendu se passe.
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         // Collecte d'abord les événements SSH reçus en async depuis la dernière frame.
+        self.zones.begin_frame(ctx);
         poll_session_events(self);
-        poll_lang_download(self);
-        poll_remote_langs(self);
+        self.poll_kit(ctx);
         handle_keyboard_shortcuts(self, ctx);
         crate::ui::render(self, ctx);
         // Repaint régulier pour rafraîchir les données SSH qui arrivent en async.
@@ -527,7 +548,7 @@ fn poll_session_events(app: &mut BetterSshApp) {
                     let op_text = op.text(&app.lang);
 
                     if ok {
-                        tab.file_explorer.add_toast(format!("✓ {op_text}"));
+                        tab.file_explorer.add_toast(op_text.to_string());
                         // Rafraîchit le répertoire courant après toute opération réussie.
                         let path = tab.file_explorer.current_path.clone();
                         tab.file_explorer.loading = true;
@@ -547,7 +568,7 @@ fn poll_session_events(app: &mut BetterSshApp) {
                         tab.file_explorer.loading   = false;
                         tab.file_explorer.dir_error = Some(label);
                     } else {
-                        tab.file_explorer.add_toast(format!("✗ {op_text} : {msg}"));
+                        tab.file_explorer.add_toast(format!("{op_text} : {msg}"));
                     }
                 }
             }
@@ -557,138 +578,94 @@ fn poll_session_events(app: &mut BetterSshApp) {
 
 // ─── Téléchargement de langue en arrière-plan ────────────────────────────────
 
-fn poll_lang_download(app: &mut BetterSshApp) {
-    if let Some(rx) = &app.lang_download_rx {
-        if let Ok(result) = rx.try_recv() {
-            match result {
-                Ok((stem, text)) => {
-                    let lang_dir = app.work_dir.join("lang");
-                    let _ = std::fs::create_dir_all(&lang_dir);
-                    let _ = std::fs::write(lang_dir.join(format!("{stem}.toml")), &text);
-                    app.lang_files = crate::i18n::list_lang_files(&app.work_dir);
-                    app.local_lang_files = crate::i18n::list_local_lang_files(&app.work_dir);
-                    app.reload_lang(&stem);
-                    app.lang_repo_status = LangRepoStatus::Installed(stem);
-                }
-                Err(err) => {
-                    app.lang_repo_status = classify_repo_error(&err.to_string());
-                }
-            }
-            app.lang_download_rx = None;
-        }
-    }
-}
-
-fn poll_remote_langs(app: &mut BetterSshApp) {
-    if let Some(rx) = &app.lang_remote_rx {
-        if let Ok(result) = rx.try_recv() {
-            match result {
-                Ok(files) => {
-                    app.remote_lang_files = files;
-                    app.lang_repo_status = LangRepoStatus::Idle;
-                }
-                Err(err) => {
-                    app.remote_lang_files.clear();
-                    app.lang_repo_status = classify_repo_error(&err.to_string());
-                }
-            }
-            app.lang_remote_rx = None;
-        }
-    }
-}
+// ─── Charte Rusty Suite : réseau, langues, mise à jour ───────────────────────
 
 impl BetterSshApp {
-    /// Recharge la langue depuis le disque/embarqué et l'applique.
-    pub fn reload_lang(&mut self, stem: &str) {
-        crate::i18n::save_lang_choice(&self.work_dir, stem);
-        let (lang, chosen) = crate::i18n::load_lang(&self.work_dir);
+    /// Enregistre les réglages communs (langue, mises à jour).
+    pub fn save_settings(&self) {
+        if let Err(e) = rusty_core::settings::save(&self.work_dir, &self.settings) {
+            log::warn!("Réglages non enregistrés : {e}");
+        }
+    }
+
+    /// Recharge la langue choisie (textes de l'application et textes communs du kit).
+    pub fn reload_language(&mut self, ctx: &Context) {
+        let (lang, kit_lang) = crate::i18n::load_lang(&self.work_dir, &self.settings.common.language);
         self.lang = lang;
-        self.lang_chosen = chosen;
-        self.lang_files = crate::i18n::list_lang_files(&self.work_dir);
-        self.local_lang_files = crate::i18n::list_local_lang_files(&self.work_dir);
+        self.kit_lang = kit_lang;
+        let kit = self.kit_lang.clone();
+        rusty_ui::set_texts(ctx, rusty_ui::KitTexts::from_lookup(|k| kit.t(k)));
     }
 
-    pub fn refresh_remote_langs(&mut self) {
-        if self.lang_remote_rx.is_some() {
-            return;
+    /// Réseau, langues distantes, mise à jour, second lancement.
+    fn poll_kit(&mut self, ctx: &Context) {
+        if let Some(online) = self.net_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.net_rx = None;
+            self.online = Some(online);
+            if online {
+                let (dir, ua) = (self.work_dir.clone(), user_agent());
+                let (tx, rx) = mpsc::channel();
+                std::thread::spawn(move || {
+                    let _ = tx.send(rusty_core::lang::refresh_remote(APP_ID, crate::i18n::PACKS, &dir, &ua));
+                });
+                self.lang_rx = Some(rx);
+                if self.settings.common.check_updates {
+                    let (tx, rx) = mpsc::channel();
+                    std::thread::spawn(move || {
+                        let _ = tx.send(update::check(APP_ID, ASSET_BASE, VERSION, &user_agent()).map_err(|e| e.to_string()));
+                    });
+                    self.update_rx = Some(rx);
+                }
+            }
         }
-        let (tx, rx) = crossbeam_channel::bounded(1);
-        self.lang_repo_status = LangRepoStatus::Loading;
-        self.lang_remote_rx = Some(rx);
+        if let Some(Ok(n)) = self.lang_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.lang_rx = None;
+            if n > 0 {
+                self.reload_language(ctx);
+            }
+        }
+        if let Some(result) = self.update_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.update_rx = None;
+            match result {
+                Ok(release) => self.update = release,
+                Err(e) => log::warn!("Vérification des mises à jour impossible : {e}"),
+            }
+        }
+        if let Some(result) = self.install_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.install_rx = None;
+            match result {
+                Ok(()) => {
+                    if let Ok(exe) = std::env::current_exe() {
+                        let _ = std::process::Command::new(exe).spawn();
+                    }
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                Err(e) => {
+                    self.show_update = false;
+                    self.toasts.push(Tone::Error, self.kit_lang.t("kit.update_failed"), e);
+                }
+            }
+        }
+        // Second lancement : ramène la fenêtre ouverte au premier plan.
+        if self.args_rx.try_iter().count() > 0 {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
+    }
+
+    /// Télécharge et installe la mise à jour (fil séparé).
+    pub fn start_install(&mut self) {
+        let Some(release) = self.update.clone() else { return };
+        let (dir, ua) = (self.work_dir.clone(), user_agent());
+        let checksum_text = self.kit_lang.t("kit.update_checksum");
+        let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
-            let _ = tx.send(crate::i18n::list_remote_lang_files());
+            let r = update::install(&release, VERSION, &dir, &ua).map_err(|e| match e {
+                update::UpdateError::Checksum => checksum_text,
+                other => other.to_string(),
+            });
+            let _ = tx.send(r);
         });
-    }
-
-    pub fn download_lang_from_git(&mut self, stem: String) {
-        if self.lang_download_rx.is_some() {
-            return;
-        }
-        let work_dir = self.work_dir.clone();
-        let (tx, rx) = crossbeam_channel::bounded(1);
-        self.lang_repo_status = LangRepoStatus::Downloading(stem.clone());
-        self.lang_download_rx = Some(rx);
-        std::thread::spawn(move || {
-            let result = crate::i18n::download_lang(&work_dir, &stem).map(|text| (stem, text));
-            let _ = tx.send(result);
-        });
-    }
-
-    pub fn install_embedded_lang(&mut self, stem: String) {
-        if self.lang_download_rx.is_some() {
-            return;
-        }
-        let work_dir = self.work_dir.clone();
-        let (tx, rx) = crossbeam_channel::bounded(1);
-        self.lang_repo_status = LangRepoStatus::Downloading(stem.clone());
-        self.lang_download_rx = Some(rx);
-        std::thread::spawn(move || {
-            let result = crate::i18n::install_embedded_lang(&work_dir, &stem).map(|text| (stem, text));
-            let _ = tx.send(result);
-        });
-    }
-
-    pub fn select_lang(&mut self, stem: String) {
-        let is_local = self.local_lang_files.iter().any(|file| file.stem == stem);
-        if is_local {
-            self.reload_lang(&stem);
-            return;
-        }
-
-        let is_remote = self.remote_lang_files.iter().any(|file| file.stem == stem);
-        if is_remote {
-            self.download_lang_from_git(stem);
-            return;
-        }
-
-        if crate::i18n::embedded_lang(&stem).is_some() {
-            self.install_embedded_lang(stem);
-        }
-    }
-
-    pub fn ensure_remote_langs_loaded(&mut self) {
-        if self.remote_lang_files.is_empty()
-            && self.lang_remote_rx.is_none()
-            && matches!(self.lang_repo_status, LangRepoStatus::Idle)
-        {
-            self.refresh_remote_langs();
-        }
-    }
-}
-
-fn classify_repo_error(message: &str) -> LangRepoStatus {
-    let lower = message.to_lowercase();
-    if lower.contains("dns")
-        || lower.contains("resolve")
-        || lower.contains("timed out")
-        || lower.contains("connection")
-        || lower.contains("network")
-        || lower.contains("os error 10060")
-        || lower.contains("os error 10061")
-    {
-        LangRepoStatus::Offline
-    } else {
-        LangRepoStatus::Error(message.to_string())
+        self.install_rx = Some(rx);
     }
 }
 
@@ -697,57 +674,38 @@ fn classify_repo_error(message: &str) -> LangRepoStatus {
 /// Initialise les polices egui et définit les styles de texte de l'application.
 /// `terminal_size` est la taille en points utilisée pour la police monospace.
 pub fn setup_fonts(ctx: &Context, terminal_size: f32) {
-    let mut fonts = egui::FontDefinitions::default();
-
-    // Police d'icônes Phosphor (zone Unicode privée — jamais en collision avec le texte).
-    crate::ui::icons::install(&mut fonts);
-
-    // Polices système à charger comme fallback pour les glyphes Unicode manquants.
-    // Ordre : symboles généraux → emoji → CJK.
-    #[cfg(target_os = "windows")]
-    let fallback_candidates: &[(&str, &str)] = &[
-        ("C:/Windows/Fonts/seguisym.ttf",  "SegoeSym"),   // symboles, box-drawing, flèches…
-        ("C:/Windows/Fonts/seguiemj.ttf",  "SegoeEmoji"), // emoji couleur
-        ("C:/Windows/Fonts/meiryo.ttc",    "Meiryo"),     // CJK japonais
-        ("C:/Windows/Fonts/simsun.ttc",    "SimSun"),     // CJK chinois
-    ];
-    #[cfg(not(target_os = "windows"))]
-    let fallback_candidates: &[(&str, &str)] = &[
-        ("/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",       "NotoSans"),
-        ("/usr/share/fonts/truetype/noto/NotoSansSymbols-Regular.ttf","NotoSymbols"),
-        ("/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",         "NotoEmoji"),
-    ];
-
-    for (path, name) in fallback_candidates {
-        if let Ok(bytes) = std::fs::read(path) {
-            fonts.font_data.insert(name.to_string(), egui::FontData::from_owned(bytes));
-            // Ajout en fin de liste = consulté seulement si le glyphe est absent des polices précédentes.
-            fonts.families.entry(egui::FontFamily::Proportional).or_default().push(name.to_string());
-            fonts.families.entry(egui::FontFamily::Monospace).or_default().push(name.to_string());
-        }
-    }
-
-    ctx.set_fonts(fonts);
-
-    // Ajuste les tailles de style tout en respectant le ratio terminal/UI.
-    let mut style = (*ctx.style()).clone();
-    style.text_styles = [
-        (TextStyle::Heading,   FontId::proportional(18.0)),
-        (TextStyle::Body,      FontId::proportional(14.0)),
-        // La police monospace sert au terminal et aux zones de code.
-        (TextStyle::Monospace, FontId::monospace(terminal_size)),
-        (TextStyle::Button,    FontId::proportional(14.0)),
-        (TextStyle::Small,     FontId::proportional(11.0)),
-    ]
-    .into();
-    ctx.set_style(style);
+    // Thème, polices (Inter, JetBrains Mono, icônes) et couleurs de la charte.
+    rusty_ui::install(ctx);
+    add_system_fallbacks(ctx);
+    // Le terminal garde sa taille de police réglable dans les préférences.
+    ctx.all_styles_mut(|style| {
+        style.text_styles.insert(TextStyle::Monospace, FontId::monospace(terminal_size));
+    });
 }
 
-/// Applique le thème clair ou sombre à l'interface.
-pub fn apply_theme(ctx: &Context, dark: bool) {
-    if dark {
-        ctx.set_visuals(egui::Visuals::dark());
-    } else {
-        ctx.set_visuals(egui::Visuals::light());
+/// Polices système ajoutées en dernier recours : un terminal distant peut afficher des
+/// symboles, emoji ou caractères CJK absents d'Inter et de JetBrains Mono.
+fn add_system_fallbacks(ctx: &Context) {
+    use egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
+    #[cfg(target_os = "windows")]
+    let candidates: &[(&str, &str)] = &[
+        ("C:/Windows/Fonts/seguisym.ttf", "SegoeSym"),
+        ("C:/Windows/Fonts/seguiemj.ttf", "SegoeEmoji"),
+        ("C:/Windows/Fonts/meiryo.ttc", "Meiryo"),
+        ("C:/Windows/Fonts/simsun.ttc", "SimSun"),
+    ];
+    #[cfg(not(target_os = "windows"))]
+    let candidates: &[(&str, &str)] = &[
+        ("/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf", "NotoSans"),
+        ("/usr/share/fonts/truetype/noto/NotoSansSymbols-Regular.ttf", "NotoSymbols"),
+        ("/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf", "NotoEmoji"),
+    ];
+    for (path, name) in candidates {
+        let Ok(bytes) = std::fs::read(path) else { continue };
+        let families = [egui::FontFamily::Proportional, egui::FontFamily::Monospace]
+            .into_iter()
+            .map(|family| InsertFontFamily { family, priority: FontPriority::Lowest })
+            .collect();
+        ctx.add_font(FontInsert::new(name, egui::FontData::from_owned(bytes), families));
     }
 }

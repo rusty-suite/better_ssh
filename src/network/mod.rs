@@ -2,5 +2,4 @@
 pub mod scanner;
 pub mod telnet;
 
-pub use scanner::{detect_local_subnet, NetworkScanner, ScanEvent, ScanParams, ScanResult};
 pub use telnet::TelnetSession;

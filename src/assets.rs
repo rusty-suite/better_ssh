@@ -25,7 +25,3 @@ pub const APP_LICENSE: &str = env!("CARGO_PKG_LICENSE");
 
 /// Octets bruts de l'icône PNG 256×256 (Linux, barre de titre egui).
 pub const ICON_PNG: &[u8] = include_bytes!("../assets/icon.png");
-
-/// Octets bruts de l'icône ICO multi-résolution (Windows .exe).
-#[cfg(windows)]
-pub const ICON_ICO: &[u8] = include_bytes!("../assets/icon.ico");

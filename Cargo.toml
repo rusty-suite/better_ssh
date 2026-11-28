@@ -17,10 +17,12 @@ name = "betterssh"
 path = "src/main.rs"
 
 [dependencies]
-eframe = { version = "0.29", features = ["default"] }
-egui = "0.29"
-egui_plot = "0.29"
-egui-phosphor = { version = "0.7", features = ["regular"] }
+eframe = { version = "0.31", features = ["default"] }
+egui = "0.31"
+egui_plot = "0.31"
+# Charte Rusty Suite : thème, composants, logo, langues, mise à jour (version épinglée)
+rusty_ui = { git = "https://github.com/rusty-suite/rusty_kit", tag = "v0.3.0" }
+rusty_core = { git = "https://github.com/rusty-suite/rusty_kit", tag = "v0.3.0" }
 tokio = { version = "1", features = ["full"] }
 russh = "0.45"
 russh-sftp = "2"
@@ -38,7 +40,6 @@ dirs = "5"
 rfd = "0.14"
 dark-light = "1"
 log = "0.4"
-fern = "0.7"
 base64 = "0.22"
 sha2 = "0.10"
 rand = "0.8"

@@ -750,9 +750,9 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool, lang: &L
     // Ne jamais le supprimer : il contrôle la police monospace + taille de toute la zone.
     let font_id = FontId::monospace(state.font_size);
 
-    let frame_resp = egui::Frame::none()
+    let frame_resp = egui::Frame::new()
         .fill(bg)
-        .inner_margin(egui::Margin::same(6.0))
+        .inner_margin(egui::Margin::same(6))
         .show(ui, |ui| {
             // ── Barre de recherche historique ────────────────────────────────
             if state.show_history_search {
@@ -878,13 +878,13 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool, lang: &L
                         .fixed_pos(pos)
                         .show(ui.ctx(), |ui| {
                             ui.set_max_width(dropdown_w);
-                            egui::Frame::none()
+                            egui::Frame::new()
                                 .fill(Color32::from_rgb(28, 28, 45))
                                 .stroke(egui::Stroke::new(
                                     1.0,
                                     Color32::from_rgb(90, 90, 170),
                                 ))
-                                .inner_margin(egui::Margin::same(4.0))
+                                .inner_margin(egui::Margin::same(4))
                                 .show(ui, |ui| {
                                     // En-tête discret.
                                     ui.label(
@@ -1027,7 +1027,13 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool, lang: &L
     // Vérifié APRÈS le rendu des labels pour laisser egui traiter la copie en premier.
     // Si egui a copié du texte cette frame (via la sélection label), on mémorise le
     // texte et on n'envoie PAS SIGINT. Sinon, on envoie SIGINT normalement.
-    let just_copied = ui.ctx().output(|o| o.copied_text.clone());
+    // egui 0.31 : une copie est une commande de sortie (OutputCommand::CopyText).
+    let just_copied = ui.ctx().output(|o| {
+        o.commands.iter().find_map(|c| match c {
+            egui::OutputCommand::CopyText(t) => Some(t.clone()),
+            _ => None,
+        })
+    }).unwrap_or_default();
     if !just_copied.is_empty() {
         state.selected_text = just_copied.clone();
     }
@@ -1083,7 +1089,7 @@ pub fn render(state: &mut TerminalState, ui: &mut Ui, modal_open: bool, lang: &L
 
     // Application des actions hors closure (pour éviter les conflits de borrow sur state).
     if do_copy {
-        ui.ctx().output_mut(|o| o.copied_text = state.selected_text.clone());
+        ui.ctx().copy_text(state.selected_text.clone());
     }
     if do_paste {
         state.input.push_str(&state.clipboard_mirror);

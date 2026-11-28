@@ -1,33 +1,30 @@
-/// Système de localisation de BetterSSH.
-/// Charge les fichiers TOML de langue depuis le répertoire de travail
-/// (ou utilise les fichiers embarqués à la compilation comme repli).
+//! Textes de BetterSSH.
+//!
+//! Le chargement (packs intégrés, copie locale, mise à jour depuis GitHub, repli sur la
+//! version intégrée puis sur l'anglais) est fait par `rusty_core::lang` (charte Rusty
+//! Suite, section 05). Les écrans de BetterSSH lisent les textes par champs typés
+//! (`lang.dlg_save_btn`) : la table plate du kit est convertie une fois en `Lang` à
+//! chaque changement de langue, ce qui garde la vérification des clés à la compilation.
 use serde::Deserialize;
-use serde_json::Value as JsonValue;
-use std::path::PathBuf;
+use std::path::Path;
 
-// ─── Fichiers embarqués ───────────────────────────────────────────────────────
-
-const EN_DEFAULT: &str = include_str!("../lang/EN_en.default.toml");
-const FR_FR:      &str = include_str!("../lang/FR_fr.toml");
-const CH_FR:      &str = include_str!("../lang/CH_fr.toml");
-const DE_DE:      &str = include_str!("../lang/DE_de.toml");
-const CH_DE:      &str = include_str!("../lang/CH_de.toml");
-const IT_IT:      &str = include_str!("../lang/IT_it.toml");
-const CH_IT:      &str = include_str!("../lang/CH_it.toml");
-
-pub const KNOWN_LANGS: &[&str] = &[
-    "EN_en", "FR_fr", "CH_fr", "DE_de", "CH_de", "IT_it", "CH_it",
+/// Packs de langue intégrés au binaire (nom de fichier historique pour l'anglais).
+pub const PACKS: rusty_core::lang::Packs = &[
+    ("EN_en", include_str!("../lang/EN_en.default.toml")),
+    ("FR_fr", include_str!("../lang/FR_fr.toml")),
+    ("CH_fr", include_str!("../lang/CH_fr.toml")),
+    ("DE_de", include_str!("../lang/DE_de.toml")),
+    ("CH_de", include_str!("../lang/CH_de.toml")),
+    ("IT_it", include_str!("../lang/IT_it.toml")),
+    ("CH_it", include_str!("../lang/CH_it.toml")),
 ];
-
-const GITHUB_RAW: &str =
-    "https://raw.githubusercontent.com/rusty-suite/better_ssh/main/lang";
 
 // ─── Struct Lang ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Lang {
-    pub lang_name: String,
-    pub lang_code: String,
+    /// Description courte (en-tête et fenêtre À propos).
+    pub app_description: String,
 
     // App / SSH messages
     pub app_ssh_connected:    String,
@@ -36,13 +33,8 @@ pub struct Lang {
     pub app_ssh_signal:       String,
 
     // Top bar
-    pub topbar_theme_light:  String,
-    pub topbar_theme_dark:   String,
-    pub topbar_theme_hint:   String,
     pub topbar_prefs:        String,
-    pub topbar_scanner:      String,
     pub topbar_scanner_hint: String,
-    pub topbar_lang_hint:    String,
 
     // Tab bar
     pub tab_close_hint: String,
@@ -154,40 +146,12 @@ pub struct Lang {
     pub fe_access_exec_perm:  String,
     pub fe_access_trav_perm:  String,
     pub fe_path_label:   String,
-    pub fe_item_count:   String,
     pub fe_hover_path:   String,
     pub fe_hover_perms:  String,
     pub fe_hover_access: String,
     pub fe_hover_size:   String,
     pub fe_hover_modified: String,
 
-    // Language window
-    pub lang_win_title:       String,
-    pub lang_active_label:    String,
-    pub lang_open_btn:        String,
-    pub lang_open_btn_hint:   String,
-    pub lang_badge_default:   String,
-    pub lang_no_internet_msg: String,
-    pub lang_local_section:   String,
-    pub lang_remote_section:  String,
-    pub lang_refresh_btn:     String,
-    pub lang_refresh_btn_hint: String,
-    pub lang_download_btn:    String,
-    pub lang_local_badge:     String,
-    pub lang_builtin_badge:   String,
-    pub lang_downloaded_badge: String,
-    pub lang_remote_badge:    String,
-    pub lang_installed_badge: String,
-    pub lang_remote_loading:  String,
-    pub lang_remote_empty:    String,
-    pub lang_remote_error:    String,
-    pub lang_local_empty:     String,
-    pub lang_status_offline:  String,
-    pub lang_status_ready:    String,
-    pub lang_status_installing: String,
-    pub lang_status_installed: String,
-    pub lang_local_path_label: String,
-    pub lang_close_btn:       String,
 
     // Welcome screen
     pub welcome_title:     String,
@@ -225,8 +189,6 @@ pub struct Lang {
     pub shortcut_history: String,
 
     // Preferences
-    pub prefs_appearance: String,
-    pub prefs_theme: String,
     pub prefs_font: String,
     pub prefs_preset: String,
     pub prefs_custom_size: String,
@@ -243,14 +205,7 @@ pub struct Lang {
     pub prefs_save: String,
 
     // About
-    pub about_title: String,
-    pub about_app: String,
-    pub about_version: String,
-    pub about_author: String,
-    pub about_license: String,
     pub about_description: String,
-    pub about_repo: String,
-    pub about_built_with: String,
 
     // Telnet and scan connection dialogs
     pub telnet_title: String,
@@ -364,13 +319,11 @@ pub struct Lang {
     pub sftp_access_denied: String,
     pub sftp_read_error: String,
 
-    // Language window (extra)
-    pub lang_status_repo_count: String,
 }
 
 impl Default for Lang {
     fn default() -> Self {
-        toml::from_str(EN_DEFAULT).expect("embedded EN default is valid TOML")
+        from_kit(&rusty_core::Lang::load(PACKS, Path::new(""), "EN_en"))
     }
 }
 
@@ -382,10 +335,6 @@ impl Lang {
     /// Insère un nom dans un patron comme `"Renommé en «{name}»"`.
     pub fn fmt_name(pattern: &str, name: &str) -> String {
         pattern.replace("{name}", name)
-    }
-    /// Insère une langue dans un patron comme `"Langue [{lang}]"`.
-    pub fn fmt_lang(pattern: &str, lang: &str) -> String {
-        pattern.replace("{lang}", lang)
     }
     /// Remplace plusieurs marqueurs `{nom}` d'un patron (ex. `[("host", "srv")]`).
     pub fn fmt(pattern: &str, args: &[(&str, &str)]) -> String {
@@ -437,320 +386,38 @@ impl Lang {
     }
 }
 
-// ─── Métadonnées d'un fichier de langue ───────────────────────────────────────
+// ─── Chargement ───────────────────────────────────────────────────────────────
 
-#[derive(Clone)]
-pub struct LangFile {
-    /// Identifiant fichier (ex : `"CH_fr"`, `"EN_en"`).
-    pub stem: String,
-    /// Nom affiché (ex : `"Français (CH)"`).
-    pub name: String,
-    /// Code BCP-47 (ex : `"fr_CH"`).
-    pub lang_code: String,
-    /// true si ce fichier provient du répertoire de travail (pas de l'embarqué).
-    pub from_disk: bool,
-    /// Nom réel du fichier (ex : `"FR_fr.toml"`).
-    pub file_name: String,
-    /// Chemin ou emplacement utile pour l'affichage.
-    pub location: String,
+/// Charge la langue `chosen` (stem, vide = langue du système) : textes typés de
+/// l'application et langue complète du kit (textes communs `[kit]`).
+pub fn load_lang(work_dir: &Path, chosen: &str) -> (Lang, rusty_core::Lang) {
+    let kit = rusty_core::Lang::load(PACKS, work_dir, chosen);
+    (from_kit(&kit), kit)
 }
 
-// ─── Détection du répertoire de travail ─────────────────────────────────────
-
-/// Détermine le répertoire de données de l'application selon l'environnement.
-/// Ordre de priorité :
-///   1. `%APPDATA%\rusty-suite\betterssh\`  (Windows installé)
-///   2. `~/.betterssh/`                     (compat. versiones antérieures)
-///   3. `~/betterssh/`                       (standalone)
-pub fn detect_work_dir() -> PathBuf {
-    #[cfg(windows)]
-    {
-        if let Ok(appdata) = std::env::var("APPDATA") {
-            let p = PathBuf::from(appdata)
-                .join("rusty-suite")
-                .join("betterssh");
-            if p.exists() || std::fs::create_dir_all(&p).is_ok() {
-                return p;
-            }
-        }
-    }
-    if let Some(home) = dirs::home_dir() {
-        // Compat. ancienne version
-        let legacy = home.join(".betterssh");
-        if legacy.exists() {
-            return legacy;
-        }
-        let standalone = home.join("betterssh");
-        if standalone.exists() || std::fs::create_dir_all(&standalone).is_ok() {
-            return standalone;
-        }
-    }
-    PathBuf::from(".")
+/// Convertit la table plate du kit en `Lang` : les clés de premier niveau (sans point)
+/// sont celles de BetterSSH ; l'anglais étant toujours chargé en première couche,
+/// aucun champ ne peut manquer.
+fn from_kit(kit: &rusty_core::Lang) -> Lang {
+    let table: toml::Table = kit
+        .keys()
+        .filter(|k| !k.contains('.'))
+        .map(|k| (k.clone(), toml::Value::String(kit.t(k))))
+        .collect();
+    table.try_into().unwrap_or_else(|e| {
+        // Impossible avec les packs intégrés (test `every_language_builds`).
+        log::error!("Textes incomplets : {e}");
+        toml::from_str(PACKS[0].1).expect("pack anglais intégré valide")
+    })
 }
 
-// ─── Correspondance locale système ───────────────────────────────────────────
-
-/// Choisit le stem de langue le mieux adapté à la locale système détectée.
-pub fn detect_system_lang_stem() -> &'static str {
-    let locale = sys_locale::get_locale().unwrap_or_default();
-    map_locale_to_stem(&locale)
-}
-
-fn map_locale_to_stem(locale: &str) -> &'static str {
-    let l = locale.to_lowercase();
-    if l.starts_with("fr_ch") || l.starts_with("fr-ch") { return "CH_fr"; }
-    if l.starts_with("de_ch") || l.starts_with("de-ch") { return "CH_de"; }
-    if l.starts_with("it_ch") || l.starts_with("it-ch") { return "CH_it"; }
-    if l.starts_with("fr")    { return "FR_fr"; }
-    if l.starts_with("de")    { return "DE_de"; }
-    if l.starts_with("it")    { return "IT_it"; }
-    "EN_en"
-}
-
-// ─── Chargement de la langue ─────────────────────────────────────────────────
-
-/// Charge la langue choisie et retourne `(Lang, stem_actif)`.
-/// Le stem vient de `{work_dir}/lang_chosen.txt`, sinon de la locale système.
-/// Les textes sont empilés par couches, la dernière l'emportant :
-///   1. anglais embarqué (toutes les clés, garantit qu'aucun champ ne manque) ;
-///   2. fichier embarqué de la langue choisie ;
-///   3. `{work_dir}/lang/{stem}.toml` sur disque (override ou fichier téléchargé).
-/// Un fichier disque plus ancien que le programme garde ainsi les traductions
-/// embarquées pour les clés qu'il ne connaît pas, au lieu de retomber sur l'anglais.
-/// Stem inconnu sans fichier disque → `EN_en`.
-pub fn load_lang(work_dir: &PathBuf) -> (Lang, String) {
-    let stem = read_chosen(work_dir)
-        .unwrap_or_else(|| detect_system_lang_stem().to_string());
-
-    let disk = read_disk_lang(work_dir, &stem);
-    let bundled = embedded_lang(&stem);
-    if disk.is_none() && bundled.is_none() {
-        return (Lang::default(), "EN_en".to_string());
-    }
-
-    let layers: Vec<&str> = bundled.into_iter().chain(disk.as_deref()).collect();
-    (merge_with_default(&layers), stem)
-}
-
-/// Lit le choix sauvegardé dans `lang_chosen.txt`.
-fn read_chosen(work_dir: &PathBuf) -> Option<String> {
-    let s = std::fs::read_to_string(work_dir.join("lang_chosen.txt")).ok()?;
-    let stem = s.trim().to_string();
-    if stem.is_empty() { None } else { Some(stem) }
-}
-
-/// Lit un fichier `.toml` depuis `{work_dir}/lang/`.
-fn read_disk_lang(work_dir: &PathBuf, stem: &str) -> Option<String> {
-    std::fs::read_to_string(work_dir.join("lang").join(format!("{stem}.toml"))).ok()
-}
-
-/// Retourne le texte TOML embarqué pour un stem donné.
-pub fn embedded_lang(stem: &str) -> Option<&'static str> {
-    match stem {
-        "EN_en" => Some(EN_DEFAULT),
-        "FR_fr" => Some(FR_FR),
-        "CH_fr" => Some(CH_FR),
-        "DE_de" => Some(DE_DE),
-        "CH_de" => Some(CH_DE),
-        "IT_it" => Some(IT_IT),
-        "CH_it" => Some(CH_IT),
-        _ => None,
-    }
-}
-
-/// Fusionne des textes TOML de langue par-dessus les valeurs par défaut EN.
-/// Chaque couche écrase les clés des précédentes ; une couche illisible est ignorée.
-fn merge_with_default(layers: &[&str]) -> Lang {
-    let mut base: toml::Value = toml::from_str(EN_DEFAULT)
-        .unwrap_or(toml::Value::Table(toml::map::Map::new()));
-
-    for layer in layers {
-        let Ok(toml::Value::Table(over)) = toml::from_str::<toml::Value>(layer) else {
-            log::warn!("Fichier de langue illisible ignoré");
-            continue;
-        };
-        if let toml::Value::Table(b) = &mut base {
-            for (k, v) in over {
-                b.insert(k, v);
-            }
-        }
-    }
-
-    let merged = toml::to_string(&base).unwrap_or_default();
-    toml::from_str(&merged).unwrap_or_default()
-}
-
-// ─── Persistance du choix ─────────────────────────────────────────────────────
-
-pub fn save_lang_choice(work_dir: &PathBuf, stem: &str) {
-    let _ = std::fs::write(work_dir.join("lang_chosen.txt"), stem);
-}
-
-// ─── Inventaire des langues disponibles ─────────────────────────────────────
-
-/// Construit la liste des langues disponibles (embarquées + sur disque).
-pub fn list_lang_files(work_dir: &PathBuf) -> Vec<LangFile> {
-    let mut files: Vec<LangFile> = Vec::new();
-
-    // Langues embarquées
-    for &stem in KNOWN_LANGS {
-        if let Some(text) = embedded_lang(stem) {
-            if let Some(file) = parse_lang_toml(
-                stem.to_string(),
-                text,
-                false,
-                embedded_file_name(stem).to_string(),
-                "embedded".to_string(),
-            ) {
-                files.push(file);
-            }
-        }
-    }
-
-    // Les fichiers sur disque écrasent l'embarqué s'ils ont le même stem.
-    for disk_file in list_local_lang_files(work_dir) {
-        if let Some(pos) = files.iter().position(|f| f.stem == disk_file.stem) {
-            files[pos] = disk_file;
-        } else {
-            files.push(disk_file);
-        }
-    }
-
-    files.sort_by(|a, b| a.name.cmp(&b.name));
-    files
-}
-
-/// Liste les fichiers `.toml` réellement présents dans `{work_dir}/lang/`.
-pub fn list_local_lang_files(work_dir: &PathBuf) -> Vec<LangFile> {
-    let mut files: Vec<LangFile> = Vec::new();
-
-    let lang_dir = work_dir.join("lang");
-    if let Ok(entries) = std::fs::read_dir(&lang_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("toml") { continue; }
-            let stem = match path.file_stem().and_then(|s| s.to_str()) {
-                Some(s) if !s.ends_with(".default") => s.to_string(),
-                _ => continue,
-            };
-            if let Ok(text) = std::fs::read_to_string(&path) {
-                if let Some(file_name) = path.file_name().and_then(|s| s.to_str()) {
-                    if let Some(file) = parse_lang_toml(
-                        stem,
-                        &text,
-                        true,
-                        file_name.to_string(),
-                        path.display().to_string(),
-                    ) {
-                        files.push(file);
-                    }
-                }
-            }
-        }
-    }
-
-    files.sort_by(|a, b| a.name.cmp(&b.name));
-    files
-}
-
-/// Liste les langues présentes sur GitHub.
-pub fn list_remote_lang_files() -> anyhow::Result<Vec<LangFile>> {
-    let url = "https://api.github.com/repos/rusty-suite/better_ssh/contents/lang";
-    let response = ureq::get(url)
-        .set("User-Agent", "betterssh")
-        .set("Accept", "application/vnd.github+json")
-        .timeout(std::time::Duration::from_secs(10))
-        .call()?;
-    let body = response.into_string()?;
-    let entries: Vec<JsonValue> = serde_json::from_str(&body)?;
-    let mut files = Vec::new();
-
-    for entry in entries {
-        let Some(name) = entry.get("name").and_then(|v| v.as_str()) else { continue; };
-        if !name.ends_with(".toml") { continue; }
-        let stem = name.trim_end_matches(".toml").trim_end_matches(".default").to_string();
-        let download_url = entry
-            .get("download_url")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
-
-        if download_url.is_empty() {
-            continue;
-        }
-
-        let text = ureq::get(&download_url)
-            .set("User-Agent", "betterssh")
-            .timeout(std::time::Duration::from_secs(10))
-            .call()?
-            .into_string()?;
-
-        if let Some(file) = parse_lang_toml(stem, &text, false, name.to_string(), download_url) {
-            files.push(file);
-        }
-    }
-
-    files.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(files)
-}
-
-// ─── Téléchargement d'une langue depuis GitHub ───────────────────────────────
-
-/// Télécharge `{stem}.toml` depuis GitHub et l'écrit dans `{work_dir}/lang/`.
-/// Retourne `Ok(texte)` si réussi.
-pub fn download_lang(work_dir: &PathBuf, stem: &str) -> anyhow::Result<String> {
-    let file_name = embedded_file_name(stem);
-    let url = format!("{GITHUB_RAW}/{file_name}");
-    let text = ureq::get(&url)
-        .timeout(std::time::Duration::from_secs(10))
-        .call()?
-        .into_string()?;
-    let lang_dir = work_dir.join("lang");
-    std::fs::create_dir_all(&lang_dir)?;
-    std::fs::write(lang_dir.join(format!("{stem}.toml")), &text)?;
-    Ok(text)
-}
-
-pub fn install_embedded_lang(work_dir: &PathBuf, stem: &str) -> anyhow::Result<String> {
-    let text = embedded_lang(stem)
-        .ok_or_else(|| anyhow::anyhow!("embedded language not found: {stem}"))?
-        .to_string();
-    let lang_dir = work_dir.join("lang");
-    std::fs::create_dir_all(&lang_dir)?;
-    std::fs::write(lang_dir.join(format!("{stem}.toml")), &text)?;
-    Ok(text)
-}
-
-fn parse_lang_toml(
-    stem: String,
-    text: &str,
-    from_disk: bool,
-    file_name: String,
-    location: String,
-) -> Option<LangFile> {
-    let val = toml::from_str::<toml::Value>(text).ok()?;
-    let name = val.get("lang_name")
-        .and_then(|v| v.as_str())
-        .unwrap_or(&stem)
-        .to_string();
-    let lang_code = val.get("lang_code")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    Some(LangFile { stem, name, lang_code, from_disk, file_name, location })
-}
-
-fn embedded_file_name(stem: &str) -> &'static str {
-    match stem {
-        "EN_en" => "EN_en.default.toml",
-        "FR_fr" => "FR_fr.toml",
-        "CH_fr" => "CH_fr.toml",
-        "DE_de" => "DE_de.toml",
-        "CH_de" => "CH_de.toml",
-        "IT_it" => "IT_it.toml",
-        "CH_it" => "CH_it.toml",
-        _ => "unknown.toml",
-    }
+/// Ancien choix de langue (`lang_chosen.txt`) repris comme stem.
+pub fn legacy_choice(work_dir: &Path) -> Option<String> {
+    let name = std::fs::read_to_string(work_dir.join("lang_chosen.txt")).ok()?;
+    let name = name.trim();
+    let stem = name.strip_suffix(".toml").unwrap_or(name);
+    let stem = stem.strip_suffix(".default").unwrap_or(stem);
+    (!stem.is_empty()).then(|| stem.to_string())
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -758,60 +425,57 @@ fn embedded_file_name(stem: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeSet;
 
-    fn keys(text: &str) -> BTreeSet<String> {
-        match toml::from_str::<toml::Value>(text).expect("valid TOML") {
-            toml::Value::Table(t) => t.keys().cloned().collect(),
-            _ => BTreeSet::new(),
-        }
+    fn load(stem: &str) -> Lang {
+        load_lang(&std::env::temp_dir().join("better_ssh_lang_test"), stem).0
     }
 
-    /// Toutes les langues embarquées ont exactement les clés de l'anglais :
-    /// aucune clé manquante (texte anglais affiché) ni orpheline (faute de frappe).
+    /// Toutes les langues intégrées ont exactement les clés de l'anglais.
     #[test]
     fn all_languages_have_same_keys() {
-        let reference = keys(EN_DEFAULT);
-        for stem in KNOWN_LANGS {
-            let text = embedded_lang(stem).expect("embedded");
-            let k = keys(text);
-            let missing: Vec<_> = reference.difference(&k).collect();
-            let extra: Vec<_> = k.difference(&reference).collect();
-            assert!(missing.is_empty() && extra.is_empty(),
-                "{stem}: manquantes {missing:?}, en trop {extra:?}");
-        }
+        assert_eq!(rusty_core::lang::check_packs(PACKS), Vec::<String>::new());
     }
 
-    /// Chaque langue embarquée se désérialise en `Lang` complet (aucun champ absent).
+    /// Chaque langue intégrée donne un `Lang` complet, traduit.
     #[test]
-    fn every_embedded_language_deserializes() {
-        for stem in KNOWN_LANGS {
-            let text = embedded_lang(stem).unwrap();
-            toml::from_str::<Lang>(text)
-                .unwrap_or_else(|e| panic!("{stem}: {e}"));
+    fn every_language_builds() {
+        for (stem, text) in PACKS {
+            toml::from_str::<Lang>(text).unwrap_or_else(|e| panic!("{stem}: {e}"));
         }
+        assert_eq!(load("FR_fr").btn_delete, "Supprimer");
     }
 
-    /// Une couche disque incomplète garde les traductions embarquées de sa langue.
+    /// Un pack local incomplet garde les traductions intégrées de sa langue.
     #[test]
-    fn disk_layer_keeps_bundled_translations() {
-        let disk = "lang_name = \"Perso\"\n";
-        let lang = merge_with_default(&[FR_FR, disk]);
-        assert_eq!(lang.lang_name, "Perso");
+    fn local_layer_keeps_bundled_translations() {
+        let dir = std::env::temp_dir().join("better_ssh_lang_local");
+        std::fs::create_dir_all(dir.join("lang")).unwrap();
+        std::fs::write(rusty_core::lang::local_file(&dir, "FR_fr"), "dlg_save_btn = \"Perso\"\n").unwrap();
+        let (lang, _) = load_lang(&dir, "FR_fr");
+        assert_eq!(lang.dlg_save_btn, "Perso");
         assert_eq!(lang.btn_delete, "Supprimer");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn format_size_uses_language_units() {
-        let fr = merge_with_default(&[FR_FR]);
+        let fr = load("FR_fr");
         assert_eq!(fr.format_size(512), "512 o");
         assert_eq!(fr.format_size(2048), "2.0 Ko");
-        let en = Lang::default();
-        assert_eq!(en.format_size(3 * 1024 * 1024), "3.0 MB");
+        assert_eq!(Lang::default().format_size(3 * 1024 * 1024), "3.0 MB");
     }
 
     #[test]
     fn fmt_replaces_named_markers() {
         assert_eq!(Lang::fmt("{a}-{b}-{a}", &[("a", "1"), ("b", "2")]), "1-2-1");
+    }
+
+    #[test]
+    fn legacy_choice_strips_extensions() {
+        let dir = std::env::temp_dir().join("better_ssh_lang_legacy");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("lang_chosen.txt"), "CH_fr\n").unwrap();
+        assert_eq!(legacy_choice(&dir).as_deref(), Some("CH_fr"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

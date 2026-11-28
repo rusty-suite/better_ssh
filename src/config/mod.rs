@@ -2,5 +2,5 @@
 pub mod profile;
 pub mod vault;
 
-pub use profile::{AppConfig, AuthMethod, ConnectionProfile, NetworkDefaults, TerminalConfig};
+pub use profile::{AppConfig, AuthMethod, ConnectionProfile};
 pub use vault::{MasterKeyCheck, Vault};

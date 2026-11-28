@@ -27,7 +27,7 @@ pub fn render(app: &mut BetterSshApp, ui: &mut Ui) {
                 // Bouton de fermeture rouge.
                 if ui.add(
                     egui::Button::new(
-                        egui::RichText::new(ph::X_CIRCLE)
+                        ph::rich(ph::X_CIRCLE, ph::SIZE)
                             .color(egui::Color32::from_rgb(220, 70, 70))
                             .strong(),
                     )

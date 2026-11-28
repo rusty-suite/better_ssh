@@ -7,7 +7,7 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use crossbeam_channel::{Receiver, Sender};
-use russh::client::{self, Handle};
+use russh::client::{self};
 use russh::keys::key::PublicKey;
 use russh::{ChannelMsg, Disconnect};
 use russh_sftp::client::SftpSession;
@@ -438,9 +438,9 @@ async fn run_session(
                 SessionCommand::SftpUpload { content, remote_path } => {
                     // Ouvre un canal SFTP séparé sur la même session SSH (multiplexage).
                     let upload_result: Result<usize> = async {
-                        let mut sftp_ch = session.channel_open_session().await?;
+                        let sftp_ch = session.channel_open_session().await?;
                         sftp_ch.request_subsystem(true, "sftp").await?;
-                        let mut sftp = SftpSession::new(sftp_ch.into_stream()).await?;
+                        let sftp = SftpSession::new(sftp_ch.into_stream()).await?;
                         sftp.write(&remote_path, &content).await?;
                         Ok(content.len())
                     }

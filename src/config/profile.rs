@@ -175,10 +175,50 @@ impl Default for NetworkDefaults {
 
 impl AppConfig {
     /// Répertoire de configuration de l'application (`~/.betterssh/`).
+    /// Dossier de données, déterminé une fois au démarrage.
+    ///
+    /// Les programmes de la suite sont portables : par défaut `better_ssh-data` à côté
+    /// de l'exécutable (`rusty_core::paths`, repli sur le dossier de configuration de
+    /// l'utilisateur). L'ancien dossier `~/.betterssh` reste utilisé s'il contient déjà
+    /// des profils, une configuration ou un coffre, pour ne rien perdre à la mise à jour,
+    /// sauf si un dossier `better_ssh-data` existe déjà à côté de l'exécutable : ce
+    /// dossier portable explicite l'emporte toujours.
     pub fn config_dir() -> PathBuf {
-        home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".betterssh")
+        static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        DIR.get_or_init(|| {
+            let portable = std::env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().map(|d| d.join(format!("{}-data", crate::app::APP_ID))));
+            if let Some(dir) = portable.filter(|d| d.is_dir()) {
+                return dir;
+            }
+            let legacy = home_dir().map(|h| h.join(".betterssh"));
+            match legacy {
+                Some(dir)
+                    if ["config.toml", "profiles.toml", "vault.toml"]
+                        .iter()
+                        .any(|f| dir.join(f).is_file()) =>
+                {
+                    dir
+                }
+                _ => rusty_core::paths::data_dir(crate::app::APP_ID),
+            }
+        })
+        .clone()
+    }
+
+    /// Ancien dossier des langues (`%APPDATA%/rusty-suite/betterssh`), lu une seule
+    /// fois pour reprendre le choix de langue des versions précédentes.
+    pub fn legacy_lang_dirs() -> Vec<PathBuf> {
+        let mut dirs = Vec::new();
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            dirs.push(PathBuf::from(appdata).join("rusty-suite").join("betterssh"));
+        }
+        if let Some(home) = home_dir() {
+            dirs.push(home.join(".betterssh"));
+            dirs.push(home.join("betterssh"));
+        }
+        dirs
     }
 
     pub fn config_path() -> PathBuf {
