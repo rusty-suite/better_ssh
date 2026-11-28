@@ -8,6 +8,33 @@ et le projet respecte le [Versionnage sémantique](https://semver.org/lang/fr/) 
 
 ## [Non publié]
 
+## [0.4.0] - 2026-11-28
+
+### Ajouté
+- Interface selon la charte Rusty Suite (rusty_kit) : en-tête avec logo, bouton Langue
+  et Paramètres, barre d'état commune (réseau, langues, mise à jour, version).
+- Fenêtres communes Langue, À propos et Mise à jour.
+- Mise à jour intégrée : téléchargement vérifié (SHA-256), retour automatique à la
+  version précédente si la nouvelle ne démarre pas.
+- Programme portable : données dans `better_ssh-data` à côté de l'exécutable.
+- Instance unique : un second lancement ramène la fenêtre ouverte.
+
+### Modifié
+- Thème sombre, polices (Inter, JetBrains Mono) et icônes de la charte ; le choix
+  clair/sombre est retiré.
+- Langues gérées par la bibliothèque commune ; le choix de langue précédent est repris.
+- Le dossier `~/.betterssh` reste utilisé s'il contient déjà des profils, une
+  configuration ou un coffre ; un dossier `better_ssh-data` à côté de l'exécutable
+  l'emporte toujours.
+- Scan réseau, snippets et À propos dans la barre des sessions.
+- Fenêtre centrée de 560 pt de haut (écran 1080p à 150 %) ; Préférences et dialogue
+  de connexion défilent au besoin.
+- Textes sans emoji décoratifs ni tirets cadratins.
+
+### Supprimé
+- Ancienne fenêtre de langues et section À propos des Préférences (remplacées par
+  les fenêtres communes).
+
 ## [0.3.0] - 2026-11-28
 
 ### Modifié
