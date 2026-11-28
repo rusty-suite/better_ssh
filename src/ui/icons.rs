@@ -1,28 +1,24 @@
-/// Icônes Phosphor pour l'interface graphique.
-///
-/// Toutes les icônes utilisent la police Phosphor (zone Unicode privée, PUA),
-/// indépendante de la police de texte choisie par l'utilisateur.
-/// Importer ce module avec `use crate::ui::icons as ph;` puis `ph::FOLDER`.
+//! Icônes Phosphor de l'interface, fournies par rusty_kit (charte Rusty Suite).
+//!
+//! Importer ce module avec `use crate::ui::icons as ph;` puis `ph::FOLDER`.
+//! La police de texte de la charte (Inter) possède aussi des glyphes dans la zone privée
+//! d'Unicode : une icône doit toujours être dessinée avec la police d'icônes du kit.
+//!   - icône seule : `ph::rich(ph::FOLDER, 16.0)` ;
+//!   - icône + texte : `ph::with_text(ph::FOLDER, &texte)` ;
+//!   - icône + texte coloré (états, alertes) : `ph::colored(ph::WARNING, &texte, 12.0, couleur)`.
+use egui::text::{LayoutJob, TextFormat};
+use egui::{Color32, FontId, WidgetText};
 
-// Re-export des constantes Phosphor (variante Regular).
-pub use egui_phosphor::regular::*;
+pub use rusty_ui::icons::phosphor::*;
+pub use rusty_ui::icons::{rich, with_text};
 
-use egui::{FontId, RichText};
+/// Taille des icônes seules dans les boutons et libellés courants.
+pub const SIZE: f32 = 16.0;
 
-/// Renvoie un `RichText` à la taille de corps standard (14 px).
-#[inline]
-pub fn icon(code: &str) -> RichText {
-    RichText::new(code)
-}
-
-/// Renvoie un `RichText` à taille personnalisée.
-#[inline]
-pub fn icon_sized(code: &str, size: f32) -> RichText {
-    RichText::new(code).size(size)
-}
-
-/// Enregistre la police Phosphor dans les définitions de polices egui.
-/// À appeler dans `setup_fonts` avant `ctx.set_fonts(fonts)`.
-pub fn install(fonts: &mut egui::FontDefinitions) {
-    egui_phosphor::add_to_fonts(fonts, egui_phosphor::Variant::Regular);
+/// Icône suivie d'un texte, tous deux de la couleur donnée.
+pub fn colored(icon: &str, text: &str, size: f32, color: Color32) -> WidgetText {
+    let mut job = LayoutJob::default();
+    job.append(icon, 0.0, TextFormat { font_id: rusty_ui::icons::font(size), color, ..Default::default() });
+    job.append(&format!(" {text}"), 0.0, TextFormat { font_id: FontId::proportional(size), color, ..Default::default() });
+    job.into()
 }

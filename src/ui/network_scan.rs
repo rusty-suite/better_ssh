@@ -3,6 +3,7 @@
 /// de modifier les paramètres de recherche et de se connecter en un clic.
 use crate::network::scanner::{detect_local_subnet, NetworkScanner, ScanEvent, ScanParams, ScanResult};
 use crate::i18n::Lang;
+use crate::ui::icons as ph;
 use crossbeam_channel::Receiver;
 use egui::Ui;
 
@@ -146,7 +147,7 @@ pub fn render(state: &mut NetworkScanState, ui: &mut Ui, lang: &Lang) -> ScanAct
 
     let mut action = ScanAction::None;
 
-    ui.heading(format!("🔍 {}", lang.scan_window_title));
+    ui.heading(&lang.scan_window_title);
     ui.separator();
 
     // ── Paramètres ────────────────────────────────────────────────────────────
@@ -154,14 +155,14 @@ pub fn render(state: &mut NetworkScanState, ui: &mut Ui, lang: &Lang) -> ScanAct
 
     // ── Messages d'état ───────────────────────────────────────────────────────
     if let Some(err) = &state.error.clone() {
-        ui.colored_label(egui::Color32::from_rgb(220, 60, 60), format!("⚠ {err}"));
+        ui.label(ph::colored(ph::WARNING, err, 14.0, rusty_ui::tokens::DANGER));
     }
 
     if state.scanning || state.progress.1 > 0 {
         let (done, total) = state.progress;
         let pct = if total > 0 { done as f32 / total as f32 } else { 0.0 };
         let eta_s = if done > 0 && pct < 1.0 {
-            let elapsed_ratio = 1.0 - pct;
+            let _elapsed_ratio = 1.0 - pct;
             let remaining = total - done;
             // Estimation grossière basée sur le débit moyen observé.
             Lang::fmt_n(&lang.scan_remaining, remaining)
@@ -224,10 +225,10 @@ fn render_params_panel(state: &mut NetworkScanState, ui: &mut Ui, lang: &Lang) {
         return; // panneau replié
     }
 
-    egui::Frame::none()
+    egui::Frame::new()
         .fill(ui.visuals().faint_bg_color)
-        .inner_margin(egui::Margin::same(8.0))
-        .outer_margin(egui::Margin::symmetric(0.0, 4.0))
+        .inner_margin(egui::Margin::same(8))
+        .outer_margin(egui::Margin::symmetric(0, 4))
         .show(ui, |ui| {
             egui::Grid::new("scan_params_grid")
                 .num_columns(4)
@@ -306,7 +307,7 @@ fn render_results_table(
                     .desired_width(140.0)
                     .hint_text(&lang.scan_filter_hint),
             );
-            ui.label("🔍");
+            ui.label(ph::rich(ph::MAGNIFYING_GLASS, ph::SIZE));
         });
     });
 
@@ -340,7 +341,7 @@ fn render_results_table(
                     }) {
                         ui.label(result.ip.to_string());
 
-                        ui.label(result.hostname.as_deref().unwrap_or("—"));
+                        ui.label(result.hostname.as_deref().unwrap_or("-"));
 
                         // Colorise la latence : vert < 50 ms, orange < 200 ms, rouge sinon
                         if let Some(ms) = result.latency_ms {
@@ -353,11 +354,11 @@ fn render_results_table(
                             };
                             ui.colored_label(color, format!("{ms} ms"));
                         } else {
-                            ui.label("—");
+                            ui.label("-");
                         }
 
                         // Bannière complète
-                        let banner = result.ssh_banner.as_deref().unwrap_or("—");
+                        let banner = result.ssh_banner.as_deref().unwrap_or("-");
                         ui.label(banner)
                             .on_hover_text(banner); // tooltip pour les bannières longues
 
@@ -366,7 +367,7 @@ fn render_results_table(
                             .ssh_banner
                             .as_deref()
                             .and_then(|b| b.split_whitespace().last())
-                            .unwrap_or("—");
+                            .unwrap_or("-");
                         ui.label(version);
 
                         // Bouton de connexion directe

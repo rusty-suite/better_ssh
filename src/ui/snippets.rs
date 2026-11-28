@@ -77,7 +77,7 @@ impl SnippetsState {
 pub fn render(state: &mut SnippetsState, ui: &mut Ui, lang: &Lang) {
     // ── En-tête ───────────────────────────────────────────────────────────────
     ui.horizontal(|ui| {
-        ui.heading(format!("{} {}", ph::LIGHTNING, lang.shortcut_snippets));
+        ui.heading(&lang.shortcut_snippets);
         ui.label(
             egui::RichText::new(Lang::fmt_n(&lang.snip_count, state.snippets.len()))
                 .small().weak(),
@@ -93,7 +93,7 @@ pub fn render(state: &mut SnippetsState, ui: &mut Ui, lang: &Lang) {
 
     // ── Barre de recherche ────────────────────────────────────────────────────
     ui.horizontal(|ui| {
-        ui.label(ph::MAGNIFYING_GLASS);
+        ui.label(ph::rich(ph::MAGNIFYING_GLASS, ph::SIZE));
         ui.text_edit_singleline(&mut state.search)
             .on_hover_text(&lang.snip_filter_hint);
     });
@@ -128,23 +128,23 @@ pub fn render(state: &mut SnippetsState, ui: &mut Ui, lang: &Lang) {
             for i in indices {
                 let s = state.snippets[i].clone();
 
-                egui::Frame::none()
+                egui::Frame::new()
                     .stroke(egui::Stroke::new(1.0, ui.visuals().window_stroke.color))
-                    .inner_margin(egui::Margin::same(6.0))
-                    .outer_margin(egui::Margin::symmetric(0.0, 2.0))
+                    .inner_margin(egui::Margin::same(6))
+                    .outer_margin(egui::Margin::symmetric(0, 2))
                     .show(ui, |ui| {
                         // ── En-tête du snippet ────────────────────────────────
                         ui.horizontal(|ui| {
                             if s.pinned {
-                                ui.label(egui::RichText::new("📌").small());
+                                ui.label(ph::rich(ph::PUSH_PIN, 12.0));
                             }
                             ui.strong(&s.name);
 
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.small_button("🗑").on_hover_text(&lang.btn_delete).clicked() {
+                                if ui.small_button(ph::rich(ph::TRASH, 14.0)).on_hover_text(&lang.btn_delete).clicked() {
                                     to_delete = Some(i);
                                 }
-                                if ui.small_button("✏").on_hover_text(&lang.sidebar_edit_hint).clicked() {
+                                if ui.small_button(ph::rich(ph::PENCIL_SIMPLE, 14.0)).on_hover_text(&lang.sidebar_edit_hint).clicked() {
                                     to_edit = Some(i);
                                 }
                                 let pin_label = if s.pinned { &lang.snip_unpin } else { &lang.snip_pin };

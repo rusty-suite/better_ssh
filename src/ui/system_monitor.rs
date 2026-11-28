@@ -80,7 +80,7 @@ impl SystemMonitorState {
 pub fn render(state: &mut SystemMonitorState, ui: &mut Ui, lang: &Lang) {
     // ── En-tête avec métriques textuelles ─────────────────────────────────────
     ui.horizontal(|ui| {
-        ui.heading(format!("📊 {}", lang.shortcut_monitor));
+        ui.heading(&lang.shortcut_monitor);
         ui.separator();
 
         // Uptime formaté en jours/heures/minutes.

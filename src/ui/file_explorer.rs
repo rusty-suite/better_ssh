@@ -70,7 +70,7 @@ pub struct FileExplorerState {
     // Toasts
     pub toasts: Vec<Toast>,
     // Favoris (label, chemin)
-    pub favorites: Vec<(String, String)>,
+    pub favorites: Vec<(&'static str, String)>,
     // Cache des rects d'items pour le lasso (rempli chaque frame)
     item_rects: Vec<(String, Rect)>,
     /// true dès qu'un premier listage SFTP a été reçu (évite la boucle de rechargement).
@@ -105,14 +105,14 @@ impl FileExplorerState {
             search_query: String::new(),
             toasts: Vec::new(),
             favorites: vec![
-                (format!("{} /root", ph::HOUSE),     "/root".into()),
-                (format!("{} /home", ph::HOUSE),     "/home".into()),
-                (format!("{} /etc", ph::GEAR),       "/etc".into()),
-                (format!("{} /var/log", ph::CLIPBOARD), "/var/log".into()),
-                (format!("{} /tmp", ph::FOLDERS),    "/tmp".into()),
-                (format!("{} /opt", ph::PACKAGE),    "/opt".into()),
-                (format!("{} /etc/ssh", ph::LOCK),   "/etc/ssh".into()),
-                (format!("{} /var/www", ph::GLOBE),  "/var/www".into()),
+                (ph::HOUSE, "/root".into()),
+                (ph::HOUSE, "/home".into()),
+                (ph::GEAR, "/etc".into()),
+                (ph::CLIPBOARD, "/var/log".into()),
+                (ph::FOLDERS, "/tmp".into()),
+                (ph::PACKAGE, "/opt".into()),
+                (ph::LOCK, "/etc/ssh".into()),
+                (ph::GLOBE, "/var/www".into()),
             ],
             item_rects: Vec::new(),
             loaded: false,
@@ -216,7 +216,7 @@ fn fmt_date(ts: u64) -> String {
         .ok()
         .and_then(|secs| chrono::DateTime::from_timestamp(secs, 0))
         .map(|utc| utc.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string())
-        .unwrap_or_else(|| "—".into())
+        .unwrap_or_else(|| "-".into())
 }
 
 fn access_label(
@@ -355,10 +355,10 @@ fn render_sidebar(
 ) {
     ui.label(egui::RichText::new(&lang.fe_favorites).strong().small());
     ui.add_space(2.0);
-    let favs: Vec<(String, String)> = state.favorites.clone();
-    for (label, path) in &favs {
+    let favs = state.favorites.clone();
+    for (icon, path) in &favs {
         let active = state.current_path == *path;
-        let resp = ui.selectable_label(active, egui::RichText::new(label).small());
+        let resp = ui.selectable_label(active, ph::with_text(icon, path));
         if resp.clicked() { *req = Some(state.navigate_to(path.clone())); }
         resp.on_hover_text(path.as_str());
     }
@@ -393,17 +393,17 @@ fn render_toolbar(
         let can_back    = !state.nav_back.is_empty();
         let can_forward = !state.nav_forward.is_empty();
 
-        if ui.add_enabled(can_back, egui::Button::new(ph::ARROW_LEFT))
+        if ui.add_enabled(can_back, egui::Button::new(ph::rich(ph::ARROW_LEFT, ph::SIZE)))
             .on_hover_text(&lang.fe_nav_prev).clicked()
         {
             if let Some(r) = state.navigate_back() { *req = Some(r); }
         }
-        if ui.add_enabled(can_forward, egui::Button::new(ph::ARROW_RIGHT))
+        if ui.add_enabled(can_forward, egui::Button::new(ph::rich(ph::ARROW_RIGHT, ph::SIZE)))
             .on_hover_text(&lang.fe_nav_next).clicked()
         {
             if let Some(r) = state.navigate_forward() { *req = Some(r); }
         }
-        if ui.button(ph::ARROW_UP).on_hover_text(&lang.fe_nav_up).clicked() {
+        if ui.button(ph::rich(ph::ARROW_UP, ph::SIZE)).on_hover_text(&lang.fe_nav_up).clicked() {
             if let Some(r) = state.navigate_up() { *req = Some(r); }
         }
 
@@ -434,7 +434,7 @@ fn render_toolbar(
                     go = Some("/".to_string() + &parts[..=i].join("/"));
                 }
             }
-            if ui.small_button(ph::PENCIL).on_hover_text(&lang.fe_edit_path_hint).clicked() {
+            if ui.small_button(ph::rich(ph::PENCIL, 14.0)).on_hover_text(&lang.fe_edit_path_hint).clicked() {
                 state.breadcrumb_input = state.current_path.clone();
                 state.breadcrumb_edit = true;
             }
@@ -447,14 +447,14 @@ fn render_toolbar(
             } else {
                 (ph::GRID_FOUR, lang.fe_view_grid.as_str())
             };
-            if ui.small_button(vl).on_hover_text(vl_tip).clicked() {
+            if ui.small_button(ph::rich(vl, 14.0)).on_hover_text(vl_tip).clicked() {
                 state.view_mode = if state.view_mode == ViewMode::Grid { ViewMode::List } else { ViewMode::Grid };
             }
-            if ui.small_button(ph::ARROWS_CLOCKWISE).on_hover_text(&lang.fe_refresh_hint).clicked() {
+            if ui.small_button(ph::rich(ph::ARROWS_CLOCKWISE, 14.0)).on_hover_text(&lang.fe_refresh_hint).clicked() {
                 state.loading = true;
                 *req = Some(SftpRequest::ListDir(state.current_path.clone()));
             }
-            if ui.small_button(format!("{}+", ph::FOLDER)).on_hover_text(&lang.fe_new_folder_hint).clicked() {
+            if ui.small_button(ph::rich(ph::FOLDER_PLUS, 14.0)).on_hover_text(&lang.fe_new_folder_hint).clicked() {
                 let base = format!("{}/new_folder", state.current_path.trim_end_matches('/'));
                 let path = unique_name(&state.entries, &base);
                 let fname = filename_of(&path);
@@ -463,7 +463,7 @@ fn render_toolbar(
                 state.rename_request_focus = true;
                 *req = Some(SftpRequest::Mkdir(path));
             }
-            if ui.small_button(format!("{}+", ph::FILE)).on_hover_text(&lang.fe_new_file_hint).clicked() {
+            if ui.small_button(ph::rich(ph::FILE_PLUS, 14.0)).on_hover_text(&lang.fe_new_file_hint).clicked() {
                 let base = format!("{}/new_file", state.current_path.trim_end_matches('/'));
                 let path = unique_name(&state.entries, &base);
                 let fname = filename_of(&path);
@@ -503,7 +503,7 @@ fn render_content(
         ui.centered_and_justified(|ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(24.0);
-                ui.label(egui::RichText::new(ph::LOCK).size(40.0).color(Color32::from_rgb(200, 80, 80)));
+                ui.label(ph::rich(ph::LOCK, 40.0).color(Color32::from_rgb(200, 80, 80)));
                 ui.add_space(8.0);
                 ui.label(egui::RichText::new(err).color(Color32::from_rgb(220, 100, 100)).strong());
                 ui.add_space(6.0);
@@ -512,7 +512,7 @@ fn render_content(
                         .small().weak(),
                 );
                 ui.add_space(12.0);
-                if ui.button(format!("{} {}", ph::ARROW_UP, lang.fe_nav_up)).clicked() {
+                if ui.button(ph::with_text(ph::ARROW_UP, &lang.fe_nav_up)).clicked() {
                     *req = state.navigate_up();
                 }
             });
@@ -544,7 +544,7 @@ fn render_content(
     // Dessin du lasso
     if let (Some(start), Some(end)) = (state.lasso_start, state.lasso_end) {
         let r = Rect::from_two_pos(start, end);
-        ui.painter().rect_stroke(r, 2.0, Stroke::new(1.0, Color32::from_rgb(100, 160, 255)));
+        ui.painter().rect_stroke(r, 2.0, Stroke::new(1.0, rusty_ui::tokens::ACCENT_TEAL), egui::StrokeKind::Inside);
         ui.painter().rect_filled(r, 2.0, Color32::from_rgba_unmultiplied(100, 160, 255, 22));
     }
 }
@@ -598,10 +598,7 @@ fn render_list(
                         // Placeholders pour les colonnes restantes
                         ui.label(""); ui.label(""); ui.label("");
                     } else {
-                        let label = format!("{icon} {}", entry.name);
-                        let rt = egui::RichText::new(&label).small();
-                        let rt = if is_sel { rt.strong() } else { rt };
-                        let resp = ui.selectable_label(is_sel, rt);
+                        let resp = ui.selectable_label(is_sel, ph::with_text(icon, &entry.name));
 
                         let tip = format!(
                             "{}: {}\n{}: {}\n{} ({}): {}\n{}: {}\n{}: {}",
@@ -610,9 +607,9 @@ fn render_list(
                             lang.fe_hover_access, username,
                             access_label(entry, username, current_uid, lang),
                             lang.fe_hover_size,
-                            if entry.is_dir { "—".into() } else { lang.format_size(entry.size) },
+                            if entry.is_dir { "-".into() } else { lang.format_size(entry.size) },
                             lang.fe_hover_modified,
-                            entry.modified.map(fmt_date).unwrap_or_else(|| "—".into()),
+                            entry.modified.map(fmt_date).unwrap_or_else(|| "-".into()),
                         );
                         let item_rect = resp.rect;
                         state.item_rects.push((entry.path.clone(), item_rect));
@@ -621,9 +618,9 @@ fn render_list(
                         resp.context_menu(|ui| ctx_menu(state, ui, lang, Some(&entry.path), entry.is_dir, req));
 
                         ui.label(egui::RichText::new(&perm_s).monospace().small().color(color));
-                        let sz = if entry.is_dir { "—".into() } else { lang.format_size(entry.size) };
+                        let sz = if entry.is_dir { "-".into() } else { lang.format_size(entry.size) };
                         ui.label(egui::RichText::new(&sz).small());
-                        let dt = entry.modified.map(fmt_date).unwrap_or_else(|| "—".into());
+                        let dt = entry.modified.map(fmt_date).unwrap_or_else(|| "-".into());
                         ui.label(egui::RichText::new(&dt).small().weak());
                     }
                     ui.end_row();
@@ -637,10 +634,10 @@ fn render_list(
 /// Largeur d'une tuile incluant la marge interne du Frame (6px×2) et l'espacement inter-tuile.
 const TILE_INNER_W: f32 = 90.0;
 const TILE_INNER_H: f32 = 84.0;
-const TILE_MARGIN:  f32 = 6.0;
+const TILE_MARGIN:  i8 = 6;
 const TILE_SPACING: f32 = 6.0;
 /// Largeur totale occupée par une tuile dans la grille.
-const TILE_TOTAL_W: f32 = TILE_INNER_W + TILE_MARGIN * 2.0 + TILE_SPACING;
+const TILE_TOTAL_W: f32 = TILE_INNER_W + TILE_MARGIN as f32 * 2.0 + TILE_SPACING;
 
 fn render_grid(
     state: &mut FileExplorerState,
@@ -682,16 +679,16 @@ fn render_grid(
                         Color32::from_rgba_unmultiplied(255, 255, 255, 12)
                     };
 
-                    let tile = egui::Frame::none()
+                    let tile = egui::Frame::new()
                         .fill(bg_fill)
                         .stroke(Stroke::new(1.0, stroke_c))
                         .inner_margin(egui::Margin::same(TILE_MARGIN))
-                        .rounding(5.0)
+                        .corner_radius(rusty_ui::theme::radius(rusty_ui::tokens::RADIUS_MD))
                         .show(ui, |ui| {
                             ui.allocate_ui(Vec2::new(TILE_INNER_W, TILE_INNER_H), |ui| {
                                 ui.vertical_centered(|ui| {
                                     ui.label(egui::RichText::new("●").color(color).small());
-                                    ui.label(egui::RichText::new(icon).size(28.0));
+                                    ui.label(ph::rich(icon, 28.0));
                                     if state.rename_path.as_deref() == Some(entry.path.as_str()) {
                                         if let Some(new_name) = render_rename(state, ui, &entry.path) {
                                             let to = format!("{}/{new_name}", state.current_path.trim_end_matches('/'));
@@ -717,9 +714,9 @@ fn render_grid(
                         lang.fe_hover_access, username,
                         access_label(entry, username, current_uid, lang),
                         lang.fe_hover_size,
-                        if entry.is_dir { "—".into() } else { lang.format_size(entry.size) },
+                        if entry.is_dir { "-".into() } else { lang.format_size(entry.size) },
                         lang.fe_hover_modified,
-                        entry.modified.map(fmt_date).unwrap_or_else(|| "—".into()),
+                        entry.modified.map(fmt_date).unwrap_or_else(|| "-".into()),
                     );
                     handle_item(state, &entry.path, entry.is_dir, &resp, req);
                     let resp = resp.on_hover_text(tip);
@@ -820,7 +817,7 @@ fn ctx_menu(
         }
         ui.separator();
         if ui.button(&lang.fe_ctx_copy_path).clicked() {
-            ui.output_mut(|o| o.copied_text = p.to_string());
+            ui.ctx().copy_text(p.to_string());
             state.add_toast(lang.fe_toast_path_copied.clone()); ui.close_menu();
         }
     } else {
@@ -887,7 +884,7 @@ fn render_status_bar(
             ).small());
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(egui::RichText::new(format!("👤 {username}")).small().weak());
+            ui.label(ph::colored(ph::USER, username, 12.0, rusty_ui::tokens::TEXT_MUTED));
         });
     });
 }
@@ -926,7 +923,7 @@ fn handle_bg(
     state: &mut FileExplorerState,
     bg: &egui::Response,
     lang: &crate::i18n::Lang,
-    visible: &[RemoteEntry],
+    _visible: &[RemoteEntry],
     req: &mut Option<SftpRequest>,
 ) {
     if bg.drag_started() {
